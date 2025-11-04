@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "crawler"))
 # 환경 변수 로드
 load_dotenv()
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-5-nano")
 TEMP = float(os.getenv("TEMPERATURE", "0.2"))
 
 
