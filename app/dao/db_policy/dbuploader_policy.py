@@ -140,16 +140,17 @@ def main():
             policy_id = None
             region = item.get("region", "")
             sitename = utils_db.extract_sitename_from_url(url)
-            weight = utils_db.get_weight(region, url) if hasattr(utils_db, "get_weight") else 0
-
-            # documents 삽입 (플레이스홀더 9개로 수정)
+            weight = utils_db.get_weight(region, sitename) if hasattr(utils_db, "get_weight") else 0
+            llm_reinforced = False
+            llm_reinforced_sources = None
+            # documents 삽입 (플레이스홀더 11개로 수정)
             cur.execute(
                 """
-                INSERT INTO documents (title, requirements, benefits, raw_text, url, policy_id, region, sitename, weight)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO documents (title, requirements, benefits, raw_text, url, policy_id, region, sitename, weight, llm_reinforced, llm_reinforced_sources)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id;
                 """,
-                (title, requirements, benefits, raw_text, url, policy_id, region, sitename, weight)
+                (title, requirements, benefits, raw_text, url, policy_id, region, sitename, weight, llm_reinforced, llm_reinforced_sources)
             )
             doc_id = cur.fetchone()[0]
 

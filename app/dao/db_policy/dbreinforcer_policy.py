@@ -243,12 +243,9 @@ def reinforce_once(
         payload = json.loads(comp.choices[0].message.content)
         new_req = (payload.get("support_target") or "").strip()
         new_ben = (payload.get("support_content") or "").strip()
+
     except Exception as e:
         print(f"  · 대상 {target_id}: LLM 실패 - {e}")
-        return False
-
-    if not (new_req or new_ben):
-        print(f"  · 대상 {target_id}: 결과 비어있음")
         return False
 
     # 3) DB 업데이트 + provenance
@@ -264,8 +261,37 @@ def reinforce_once(
 - sources: {", ".join([str(s["id"]) for s in sources])}
 """
 
+    # --- [NEW] dry-run 프리뷰 추가 부분 ---
     if dry_run:
-        print(f"  · 대상 {target_id}: (dry-run) 업데이트 미반영")
+        print("  · (dry-run) Reinforce Preview")
+        print("    ──────────────────────────────────────────────────────")
+        print(f"    [Doc] id={target_id} | policy_id={policy_id} | title={title}")
+        print(f"    [Sources used] {', '.join(str(s['id']) for s in sources)}")
+        print("    [Top weights]  " + ", ".join(f"{s['id']}:{s['weight']}" for s in sources[:5]))
+        print("    [Original Requirements]")
+        print("    -------------------------------------------------------")
+        print((target_row.get('requirements') or '').strip()[:400] or '(없음)')
+        print("    -------------------------------------------------------")
+        print("    [Reinforced Requirements]")
+        print("    -------------------------------------------------------")
+        print(new_req if len(new_req) < 800 else new_req[:800] + '\n... (trimmed) ...')
+        print("    -------------------------------------------------------")
+        print("    [Original Benefits]")
+        print("    -------------------------------------------------------")
+        print((target_row.get('benefits') or '').strip()[:400] or '(없음)')
+        print("    -------------------------------------------------------")
+        print("    [Reinforced Benefits]")
+        print("    -------------------------------------------------------")
+        print(new_ben if len(new_ben) < 800 else new_ben[:800] + '\n... (trimmed) ...')
+        print("    -------------------------------------------------------")
+        print("    [Provenance(JSON)]")
+        print(json.dumps({
+            "policy_id": policy_id,
+            "source_doc_ids": [s["id"] for s in sources],
+            "weights": {str(s["id"]): s["weight"] for s in sources},
+            "llm_model": llm_model
+        }, ensure_ascii=False))
+        print("    ──────────────────────────────────────────────────────")
         return True
 
     with conn.cursor() as cur:
