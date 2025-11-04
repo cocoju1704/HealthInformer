@@ -77,7 +77,7 @@ def _ensure_array_cosine_fn(conn, verbose=True):
 
 def assign_policy_ids(
     title_field: str = "title",
-    similarity_threshold: float = 0.85,
+    similarity_threshold: float = 0.75,
     batch_size: int = 500,
     dry_run: bool = False,
     reset_all_on_start: bool = False,

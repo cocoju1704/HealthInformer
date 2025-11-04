@@ -46,6 +46,10 @@ def extract_sitename_from_url(url: str) -> str:
     domain = parsed.netloc.lower()
     path = parsed.path.lower()
 
+    for key, value in region_mapping.items():
+        if key in domain:
+            return value
+
     # 매핑 실패 시 도메인 첫 부분 반환
     return domain.split(".")[0] if "." in domain else "unknown"
 
