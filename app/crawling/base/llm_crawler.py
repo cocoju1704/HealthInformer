@@ -10,22 +10,14 @@ from dotenv import load_dotenv
 import sys
 import re
 
-# 환경 변수 로드
 load_dotenv()
-
-# 상위 디렉토리 경로 추가 (프로젝트 구조에 맞게 조정)
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-# BaseCrawler import (프로젝트의 기존 경로에 맞춰 유지)
 from base.base_crawler import BaseCrawler
 
-
 # ─────────────────────────────────────────────────────────────────────
-# Pydantic 모델: 최종 산출 스키마 (+ 평가 점수, faithfulness 제외)
+# Pydantic 모델: 최종 산출 스키마 (0~10점 스케일 + eval_target/eval_content만 저장용)
 # ─────────────────────────────────────────────────────────────────────
 class HealthSupportInfo(BaseModel):
-    """건강 지원 정보 표준 스키마 + 평가 점수(0~100)"""
-
     id: str = Field(description="고유 ID (UUID)")
     title: str = Field(description="공고/사업/프로그램의 제목(한 줄)")
     support_target: str = Field(description="지원 대상 또는 신청/참가 자격 요약")
@@ -33,38 +25,34 @@ class HealthSupportInfo(BaseModel):
     raw_text: Optional[str] = Field(default=None, description="원문 텍스트")
     source_url: Optional[str] = Field(default=None, description="출처 URL")
     region: Optional[str] = Field(default=None, description="지역명 (예: 광진구, 전국)")
-    eval_scores: Optional[Dict[str, int]] = Field(default=None, description="세부 평가 점수(JSON)")
-    eval_overall: Optional[int] = Field(default=None, description="총점(0~100)")
 
+    # 0~10 점수(원시 점수는 scores에 유지), 최종 저장용
+    eval_target: Optional[int] = Field(default=None, ge=0, le=10, description="(2*richness_target + 3*criterion_fit_target)/5 반올림")
+    eval_content: Optional[int] = Field(default=None, ge=0, le=10, description="(2*richness_content + 3*criterion_fit_content)/5 반올림")
 
-# LLM 응답 스키마(Structured Output)
+    # 디버깅/분석용(선택): 원시 점수(0~10)
+    eval_scores: Optional[Dict] = Field(default=None, description="richness/criterion_fit 원시 점수(0~10)")
+
+# LLM 응답 스키마(Structured Output, 0~10)
 class _EvalScores(BaseModel):
-    richness_target: int = Field(ge=0, le=100)
-    richness_content: int = Field(ge=0, le=100)
-    criterion_fit_target: int = Field(ge=0, le=100)
-    criterion_fit_content: int = Field(ge=0, le=100)
-
+    richness_target: int = Field(ge=0, le=10)
+    richness_content: int = Field(ge=0, le=10)
+    criterion_fit_target: int = Field(ge=0, le=10)
+    criterion_fit_content: int = Field(ge=0, le=10)
 
 class _LLMResponseWithTitle(BaseModel):
     title: str
     support_target: str
     support_content: str
     scores: _EvalScores
-    overall: int = Field(ge=0, le=100)
-
 
 class _LLMResponseNoTitle(BaseModel):
     support_target: str
     support_content: str
     scores: _EvalScores
-    overall: int = Field(ge=0, le=100)
 
-
-# ─────────────────────────────────────────────────────────────────────
-# Crawler 본체
-# ─────────────────────────────────────────────────────────────────────
 class LLMStructuredCrawler(BaseCrawler):
-    """LLM을 사용하여 크롤링 데이터를 구조화하는 크롤러 (weak inference 제거, 수치 가산 유지)"""
+    """LLM을 사용하여 크롤링 데이터를 구조화하는 크롤러 (0~10 평가 + 2:3 가중 합성)"""
 
     def __init__(self, api_key: str = None, model: str = "gpt-4o"):
         super().__init__()
@@ -74,9 +62,7 @@ class LLMStructuredCrawler(BaseCrawler):
         self.client = OpenAI(api_key=self.api_key)
         self.model = model
 
-    # ─────────────────────────────────────────────────────────────────
-    # HTML 파싱/정리
-    # ─────────────────────────────────────────────────────────────────
+    # ---------------- HTML 파싱/정리 ----------------
     def parse_html_file(self, file_path: str) -> BeautifulSoup:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -87,31 +73,24 @@ class LLMStructuredCrawler(BaseCrawler):
             return None
 
     def _extract_text_content(self, soup: BeautifulSoup, max_chars: int = 200000) -> str:
-        """HTML에서 주요 텍스트 내용 추출"""
         soup_copy = BeautifulSoup(str(soup), "html.parser")
-
-        # 1) 불필요 요소 제거
         for selector in [
-            "nav", "header", "footer", ".sidebar", ".menu", ".navigation",
-            "#nav", "#header", "#footer", ".ad", ".advertisement",
-            "script", "style", "noscript", ".cookie-banner", ".popup",
+            "nav","header","footer",".sidebar",".menu",".navigation",
+            "#nav","#header","#footer",".ad",".advertisement",
+            "script","style","noscript",".cookie-banner",".popup",
         ]:
             for el in soup_copy.select(selector):
                 el.decompose()
-
-        # 2) 메인 콘텐츠 영역 선택
         content_area = None
         for selector in [
-            "main", "#content", "#main", ".content", ".main-content",
-            ".contentArea", ".content-area", "article", ".article", "[role='main']",
+            "main","#content","#main",".content",".main-content",
+            ".contentArea",".content-area","article",".article","[role='main']",
         ]:
             content_area = soup_copy.select_one(selector)
-            if content_area:
-                break
+            if content_area: break
         if not content_area:
             content_area = soup_copy.find("body") or soup_copy
 
-        # 3) 테이블을 구조화 텍스트로 변환
         text_parts = []
         for table in content_area.find_all("table"):
             table_lines = ["[표 시작]"]
@@ -121,143 +100,118 @@ class LLMStructuredCrawler(BaseCrawler):
                 table_lines.append(header_line)
                 table_lines.append("-" * len(header_line))
             for row in table.find_all("tr"):
-                cells = [cell.get_text(strip=True) for cell in row.find_all(["td", "th"]) if cell.get_text(strip=True)]
+                cells = [cell.get_text(strip=True) for cell in row.find_all(["td","th"]) if cell.get_text(strip=True)]
                 if cells:
                     table_lines.append(" | ".join(cells))
             table_lines.append("[표 끝]\n")
             text_parts.append("\n".join(table_lines))
             table.decompose()
 
-        # 4) 일반 텍스트
         text = content_area.get_text(separator="\n", strip=True)
         lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
         general_text = "\n".join(lines)
         cleaned_text = general_text + ("\n\n" + "\n\n".join(text_parts) if text_parts else "")
-
-        # 5) 길이 제한
         if len(cleaned_text) > max_chars:
             print(f"    ⚠️ 텍스트가 너무 깁니다 ({len(cleaned_text):,}자). {max_chars:,}자로 자릅니다.")
             cleaned_text = cleaned_text[:max_chars] + "\n\n[... 텍스트가 잘렸습니다 ...]"
         return cleaned_text
 
-    # ─────────────────────────────────────────────────────────────────
-    # 지역 일반화(후처리): 강북구민/동작구 주민 등 → 지역구민 (근거 없으면 제거)
-    # ─────────────────────────────────────────────────────────────────
+    # ---------------- 지역 일반화 ----------------
     def _generalize_region_terms(self, text: str) -> str:
-        if not text:
-            return text
+        if not text: return text
         t = re.sub(r"([가-힣]+구)\s*(주민|구민|거주자)", "지역구민", text)
         t = re.sub(r"([가-힣]+구[\s·,]+)+주민", "지역구민", t)
         return t
 
-    # ─────────────────────────────────────────────────────────────────
-    # 추론 방지 / 증거 기반 강제 로직 (weak inference 제거)
-    # ─────────────────────────────────────────────────────────────────
-    _TARGET_KEYS = [
-        "지원대상", "대상", "신청대상", "참여대상", "이용대상",
-        "신청자격", "자격요건", "자격", "해당자"
-    ]
-    _RESIDENT_KEYS = ["구민", "주민", "거주자", "거주", "주소지", "해당 구"]
-
-    def _has_explicit_target_signal(self, raw: str) -> bool:
-        raw_no_space = raw.replace(" ", "")
-        return any(k in raw or k in raw_no_space for k in self._TARGET_KEYS)
-
-    def _has_resident_evidence(self, raw: str) -> bool:
-        return any(k in raw for k in self._RESIDENT_KEYS)
+    # ---------------- 보조 유틸 ----------------
+    _TARGET_KEYS = ["지원대상","대상","신청대상","참여대상","이용대상","신청자격","자격요건","자격","해당자"]
+    _RESIDENT_KEYS = ["구민","주민","거주자","거주","주소지","해당 구"]
 
     def _contains_numeric_detail(self, text: str) -> bool:
-        if not text:
-            return False
-        # 금액, 횟수, 기간, 비율 등 숫자 패턴 탐지
+        if not text: return False
         return bool(re.search(r"(\d[\d,\.]*\s*(원|회|일|개월|주|시간|%|명|가구|건))", text))
 
     def _dedupe_lines(self, text: str) -> str:
-        """간단 중복 제거: 공백/기호 차이만 있는 유사 라인 정규화 후 dedupe"""
-        if not text:
-            return text
-        norm = lambda s: re.sub(r"[ \t]+", " ", re.sub(r"[·•\-\u2022]+", "-", s.strip().lower()))
-        seen = set()
-        out = []
+        if not text: return text
+        norm = lambda s: re.sub(r"[ \t]+"," ", re.sub(r"[·•\-\u2022]+","-", s.strip().lower()))
+        seen, out = set(), []
         for ln in text.splitlines():
-            if not ln.strip():
-                continue
+            if not ln.strip(): continue
             key = norm(ln)
-            if key in seen:
-                continue
+            if key in seen: continue
             seen.add(key)
             out.append(ln.strip())
         return "\n".join(out)
 
-    def _enforce_no_inference(self, raw_text: str, target_text: str, title: str) -> str:
-        """
-        약한 추론 제거:
-        - 원문에 '대상/자격' 신호가 전혀 없으면 => '정보 없음'
-        - '지역구민'이지만 원문에 주민/거주자 근거가 없으면 => '정보 없음'
-        - '계획/예정/추정' 등 추론성 어휘만 있을 때 => 원문에도 없으면 '정보 없음'
-        """
-        if not target_text or not target_text.strip():
-            return "정보 없음"
-
-        explicit_signal = self._has_explicit_target_signal(raw_text)
-        resident_evidence = self._has_resident_evidence(raw_text)
-
-        # 대상 신호가 없으면 무조건 정보 없음
-        if not explicit_signal:
-            return "정보 없음"
-
-        # 주민 근거 없는 '지역구민' 제거
-        if "지역구민" in (target_text or "") and not resident_evidence:
-            return "정보 없음"
-
-        # 추론성 어휘 필터
-        if re.search(r"(계획|예정|추정|추측|가능성|의심)", target_text):
-            if not re.search(r"(계획|예정|추정|추측|가능성|의심)", raw_text):
-                return "정보 없음"
-
-        return target_text.strip()
-
-    # ─────────────────────────────────────────────────────────────────
-    # LLM 구조화
-    # ─────────────────────────────────────────────────────────────────
-    def structure_with_llm(
-        self,
-        soup: BeautifulSoup,
-        title: Optional[str] = None,
-        use_structured_output: bool = True,
-    ) -> HealthSupportInfo:
-        # 1) 텍스트 추출
+    # ---------------- LLM 구조화 ----------------
+    def structure_with_llm(self, soup: BeautifulSoup, title: Optional[str] = None, use_structured_output: bool = True) -> HealthSupportInfo:
         raw_text = self._extract_text_content(soup)
 
-        # 2) 공통 규칙 (weak inference 없음)
+        # 0~10 스케일 지시 + 2:3 가중 안내
         common_rules = """
-너는 한국 복지/보건 사업 문서를 구조적으로 요약하고 평가하는 보조자다.
+너는 한국 복지/보건 사업 문서를 구조적으로 요약하고 **평가(0~10점)** 하는 보조자다.
 반드시 다음을 지켜라:
-1) 지원대상(support_target)에는 '누가/어떤 조건으로'만 담고, 지원내용(support_content)에는 '무엇을/얼마나/어떻게 제공'만 담아라. 섞여 있으면 분리한다.
-2) 지역 일반화: '강북구민/동작구 주민/영등포구·서초구 주민' 등 구체 지자체 명칭은 모두 지원 대상(자격) 요약 시 무시한다. (지역 정보는 별도 태그로 관리됨)
-3) **추론 금지:** 원문에 나타나지 않는 대상·조건·수치·기간을 새로 만들지 마라. 특히 '정보 제공/안내/캠페인' 류 페이지에서 '대상'이 명시되지 않으면 support_target은 반드시 '정보 없음'으로 표기한다.
-4) 결과는 아래 JSON 스키마로만 반환한다 (추가 텍스트 금지):
+
+1) 필드 분리
+   - support_target: '누가/어떤 조건으로'
+   - support_content: '무엇을/얼마나/어떻게 제공'
+   - 섞이면 감점.
+
+2) 지역 일반화/제외
+   - 'OO구민/주민' 등은 '지역구민'으로 일반화. 근거 없으면 대상에서 제외.
+   - 지역명은 support_target에 넣지 않는다.
+
+3) 추론 금지
+   - 원문에 없는 조건/수치/기간을 만들지 말 것.
+   - 대상 신호가 없으면 support_target='정보 없음'.
+
+4) 출력(JSON 전용)
 {
   "support_target": "...",
   "support_content": "...",
   "scores": {
-    "richness_target": 0-100,
-    "richness_content": 0-100,
-    "criterion_fit_target": 0-100,
-    "criterion_fit_content": 0-100
-  },
-  "overall": 0-100
+    "richness_target": 0-10,
+    "richness_content": 0-10,
+    "criterion_fit_target": 0-10,
+    "criterion_fit_content": 0-10
+  }
 }
-5) overall은 다음 가중합의 정수 반올림으로 산출한다:
-   overall = 0.2*richness_target + 0.2*richness_content + 0.30*criterion_fit_target + 0.30*criterion_fit_content
-6) **지원내용 수치 가산 규칙:** support_content 안에 원문에 실제로 존재하는 구체 수치(예: 금액, %, 회/일/개월/시간, 명/가구/건)가 포함되면
-   criterion_fit_content에 최대 +15, richness_content에 최대 +10까지 가산하도록 점수를 책정하라(과도한 가산은 금지).
+
+5) 채점 가이드(요약)
+    [richness_target: '지원대상' 정보의 풍부도(조건·세부성·포괄성)]
+    • 0~2  : 대상 정보 부재/한 줄 홍보 문구 수준, 실질적 조건 없음
+    • 2~4 : 최소한의 대상 서술만 있고 구체 조건 거의 없음
+    • 4~6 : 핵심 조건 2~3개 제시이나 세부 근거/예외/증빙요건 미흡
+    • 6~8 : 주요 조건이 대부분 명시, 일부 예외/제외/증빙 안내 포함
+    • 8~10: 조건 체계가 완결적(필수/예외/제외/증빙/신청주체 등)이며 용어 정렬
+
+    [richness_content: '지원내용' 정보의 풍부도(항목·수치·절차·범위)]
+    • 0~2  : 내용 정보 부재/홍보 문구 중심, 제공 항목 식별 어려움
+    • 2~4 : 제공 항목은 있으나 모호(정성적 표현 위주), 정량·단위·상한·기간·방법 누락
+    • 4~6 : 항목 1~2개 비교적 구체화했으나 금액/횟수/기간/상한/차등 일부 누락
+    • 6~8 : 주요 항목 정리, 금액·횟수·기간·단위 등 다수 포함, 절차 개략 제시
+    • 8~10: 항목·범위·단위·상한·지급방식·절차·문의까지 체계적으로 제시, 차등/예외/중복규정 명확
+
+    [criterion_fit_target: '지원대상' 적합도(분리/레이블 일치성)]
+    • 0~2  : 대상 항목 부재, 내용과 완전 혼합, 또는 support_target='정보 없음'
+    • 3~5 : 대상 항목은 있으나 일부 모호/혼재(내용과 섞임, 레이블 불명확)
+    • 6~8 : 대체로 명확하나 소폭 혼재/표현상 혼동 약간
+    • 9~10: 완전히 명확, 레이블/내용 일치, 중복·혼재 없음
+    ※ support_target='정보 없음'이면 0~30 범위 내 배점
+
+    [criterion_fit_content: '지원내용' 적합도(무엇/얼마나/방법 중심)]
+    • 0~2  : 내용 항목 부재, 대상과 완전 혼합
+    • 3~5 : 일부만 내용 중심이거나 대상/절차와 섞임, 단편적 나열
+    • 6~8 : 대체로 내용 중심(혜택/범위/절차가 구분되나 약간 혼재)
+    • 9~10: 내용이 명확히 정리되고 단위·수치·방법이 또렷하며 대상과 분리
+
+6) 가산 규칙(지원내용)
+- 금액/횟수/기간 등 정량 정보가 **원문**에 있으면 criterion_fit_content와 richness_content를 상향(과도 금지).
 """
 
         if title:
             system_prompt = f"""{common_rules}
-과제: '{title}' 사업의 원문을 읽고 스키마에 맞춰 요약과 평가 점수를 동시에 산출하라.
-- 원문에 '대상/자격' 신호가 없으면 support_target='정보 없음'으로 하라."""
+과제: '{title}' 사업 원문을 읽고 스키마에 맞춰 요약과 0~10점 채점을 산출하라."""
             user_prompt = f"""원문:
 ================ RAW TEXT ================
 {raw_text}
@@ -265,24 +219,19 @@ class LLMStructuredCrawler(BaseCrawler):
             response_model = _LLMResponseNoTitle
         else:
             system_prompt = f"""{common_rules}
-과제: 다음 원문에서 제목을 1개 추출한 뒤, 스키마에 맞춰 요약과 평가 점수를 동시에 산출하라.
-- 원문에 '대상/자격' 신호가 없으면 support_target='정보 없음'으로 하라."""
+과제: 제목 1개를 추출한 뒤, 스키마에 맞춰 요약과 0~10점 채점을 산출하라."""
             user_prompt = f"""원문:
 ================ RAW TEXT ================
 {raw_text}
 ========================================="""
             response_model = _LLMResponseWithTitle
 
-        # 3) LLM 호출 (방어적 파싱 포함)
-        parsed_ok = False
-        raw_content = None
+        parsed_ok, raw_content = False, None
         if use_structured_output:
             completion = self.client.beta.chat.completions.parse(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                messages=[{"role":"system","content":system_prompt},
+                          {"role":"user","content":user_prompt}],
                 response_format=response_model,
                 temperature=0.1,
             )
@@ -293,11 +242,9 @@ class LLMStructuredCrawler(BaseCrawler):
         else:
             completion = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
+                messages=[{"role":"system","content":system_prompt},
+                          {"role":"user","content":user_prompt}],
+                response_format={"type":"json_object"},
                 temperature=0.1,
             )
             raw_content = completion.choices[0].message.content
@@ -309,7 +256,6 @@ class LLMStructuredCrawler(BaseCrawler):
                 parsed_ok = False
                 response_data = None
 
-        # JSON 폴백: parse 실패 시 content를 JSON으로 한 번 더 시도
         if not parsed_ok and raw_content:
             try:
                 result_json = json.loads(raw_content)
@@ -319,38 +265,22 @@ class LLMStructuredCrawler(BaseCrawler):
                 pass
 
         if not parsed_ok or response_data is None:
-            print("⚠️ LLM 응답 파싱 실패. 최소 스켈레톤으로 진행합니다.")
-            empty_scores = {"richness_target": 0, "richness_content": 0, "criterion_fit_target": 0, "criterion_fit_content": 0}
+            print("⚠️ LLM 응답 파싱 실패. 스켈레톤으로 진행.")
+            empty = _EvalScores(richness_target=0, richness_content=0,
+                                criterion_fit_target=0, criterion_fit_content=0)
             if title:
                 response_data = _LLMResponseNoTitle(
-                    support_target="정보 없음",
-                    support_content="정보 없음",
-                    scores=_EvalScores(**empty_scores),
-                    overall=0
+                    support_target="정보 없음", support_content="정보 없음", scores=empty
                 )
             else:
                 response_data = _LLMResponseWithTitle(
-                    title="제목 없음",
-                    support_target="정보 없음",
-                    support_content="정보 없음",
-                    scores=_EvalScores(**empty_scores),
-                    overall=0
+                    title="제목 없음", support_target="정보 없음", support_content="정보 없음", scores=empty
                 )
 
-        # 4) 후처리 및 조립
-        if title:
-            out_title = title
-            out_target = self._generalize_region_terms(response_data.support_target)
-            out_content = self._generalize_region_terms(response_data.support_content)
-        else:
-            out_title = response_data.title
-            out_target = self._generalize_region_terms(response_data.support_target)
-            out_content = self._generalize_region_terms(response_data.support_content)
-
-        # (A) 자격 자동 생성 금지 (weak inference 없이)
-        out_target = self._enforce_no_inference(raw_text, out_target, out_title)
-
-        # (B) 지원내용 중복 제거(간단)
+        # 후처리: 지역 일반화 + 중복라인 정리
+        out_title = title if title else getattr(response_data, "title", "제목 없음")
+        out_target = self._generalize_region_terms(response_data.support_target)
+        out_content = self._generalize_region_terms(response_data.support_content)
         out_content = self._dedupe_lines(out_content)
 
         info = HealthSupportInfo(
@@ -361,11 +291,9 @@ class LLMStructuredCrawler(BaseCrawler):
             raw_text=raw_text,
         )
 
-        # (C) 점수 반영(방어적 처리 + 하한 보정)
+        # 점수 파싱(0~10) + 하한 보정 후 가중 합성(2:3)
         try:
             raw_scores = getattr(response_data, "scores", None)
-            if raw_scores is None:
-                raw_scores = {}
             if hasattr(raw_scores, "model_dump"):
                 scores_dict = raw_scores.model_dump()
             elif isinstance(raw_scores, dict):
@@ -373,45 +301,37 @@ class LLMStructuredCrawler(BaseCrawler):
             else:
                 scores_dict = {}
 
-            for k in ["richness_target", "richness_content", "criterion_fit_target", "criterion_fit_content"]:
-                scores_dict[k] = int(scores_dict.get(k, 0) or 0)
+            # 정수/범위 보정
+            for k in ["richness_target","richness_content","criterion_fit_target","criterion_fit_content"]:
+                v = int(scores_dict.get(k, 0) or 0)
+                scores_dict[k] = max(0, min(10, v))
 
-            # content에 숫자 존재 & 원문에도 실제 숫자 존재 시 보정 하한선
+            # 원문+지원내용이 정량 정보를 실제 포함하면 약한 하한선 부여(0~10 스케일)
             if self._contains_numeric_detail(out_content) and self._contains_numeric_detail(raw_text):
-                scores_dict["criterion_fit_content"] = max(scores_dict["criterion_fit_content"], 60)
-                scores_dict["richness_content"] = max(scores_dict["richness_content"], 55)
+                scores_dict["criterion_fit_content"] = max(scores_dict["criterion_fit_content"], 6)
+                scores_dict["richness_content"] = max(scores_dict["richness_content"], 5)
 
-            info.eval_scores = {k: int(max(0, min(100, v))) for k, v in scores_dict.items()}
+            info.eval_scores = scores_dict  # 디버깅용(선택 저장)
+
+            rt = scores_dict["richness_target"]
+            rc = scores_dict["richness_content"]
+            ct = scores_dict["criterion_fit_target"]
+            cc = scores_dict["criterion_fit_content"]
+
+            # 가중치 2:3 → (2*richness + 3*criterion_fit)/5
+            info.eval_target = int(round((2*rt + 3*ct) / 5))
+            info.eval_content = int(round((2*rc + 3*cc) / 5))
 
         except Exception as e:
-            print(f"⚠️ 점수 파싱 에러: {e}")
-            info.eval_scores = {
-                "richness_target": 0,
-                "richness_content": 0,
-                "criterion_fit_target": 0,
-                "criterion_fit_content": 0,
-            }
-
-        # overall은 항상 재계산해서 보장
-        rt = info.eval_scores.get("richness_target", 0)
-        rc = info.eval_scores.get("richness_content", 0)
-        ct = info.eval_scores.get("criterion_fit_target", 0)
-        cc = info.eval_scores.get("criterion_fit_content", 0)
-        info.eval_overall = int(round(0.2*rt + 0.2*rc + 0.30*ct + 0.30*cc))
+            print(f"⚠️ 점수 파싱/합성 에러: {e}")
+            info.eval_scores = {"richness_target":0,"richness_content":0,"criterion_fit_target":0,"criterion_fit_content":0}
+            info.eval_target = 0
+            info.eval_content = 0
 
         return info
 
-    # ─────────────────────────────────────────────────────────────────
-    # 외부 인터페이스
-    # ─────────────────────────────────────────────────────────────────
-    def crawl_and_structure(
-        self,
-        url: str = None,
-        file_path: str = None,
-        region: str = None,
-        title: Optional[str] = None,
-    ) -> HealthSupportInfo:
-        # 1) HTML 가져오기
+    # ---------------- 외부 인터페이스 ----------------
+    def crawl_and_structure(self, url: str = None, file_path: str = None, region: str = None, title: Optional[str] = None) -> HealthSupportInfo:
         if url:
             soup = self.fetch_page(url)
             source_url = url
@@ -424,17 +344,12 @@ class LLMStructuredCrawler(BaseCrawler):
         if not soup:
             raise ValueError("HTML을 가져올 수 없습니다.")
 
-        # 2) LLM 구조화
         structured_data = self.structure_with_llm(soup, title=title)
-
-        # 3) 메타 정보
         structured_data.source_url = source_url
         if region:
             structured_data.region = region
-
         return structured_data
 
-    # 유틸: 저장/출력(옵션)
     def save_to_json(self, data: HealthSupportInfo, output_path: str):
         try:
             with open(output_path, "w", encoding="utf-8") as f:
@@ -447,8 +362,7 @@ class LLMStructuredCrawler(BaseCrawler):
         print("\n" + "=" * 80)
         print(f"■ ID: {data.id}")
         print(f"■ 제목: {data.title}")
-        if data.region:
-            print(f"■ 지역: {data.region}")
+        if data.region: print(f"■ 지역: {data.region}")
         print("=" * 80)
         if data.support_target:
             print("\n■ 지원 대상(자격)")
@@ -457,11 +371,13 @@ class LLMStructuredCrawler(BaseCrawler):
             print("\n■ 지원 내용")
             self._print_multiline(data.support_content, indent=1)
         if data.eval_scores:
-            print("\n■ 평가 점수(0~100)")
+            print("\n■ 평가 점수(원시, 0~10)")
             for k, v in data.eval_scores.items():
                 print(f"  - {k}: {v}")
-            if data.eval_overall is not None:
-                print(f"  - overall: {data.eval_overall}")
+        if data.eval_target is not None or data.eval_content is not None:
+            print("\n■ 저장용 가중 합성 점수(0~10)")
+            print(f"  - eval_target : {data.eval_target}")
+            print(f"  - eval_content: {data.eval_content}")
         if data.source_url:
             print(f"\n■ 출처: {data.source_url}")
         print("\n" + "=" * 80)
@@ -472,30 +388,16 @@ class LLMStructuredCrawler(BaseCrawler):
             if line.strip():
                 print(f"{prefix}{line.strip()}")
 
-
-# 단독 실행 테스트용 (옵션)
-def main():
+if __name__ == "__main__":
     import argparse
-
     parser = argparse.ArgumentParser(description="LLM을 사용하여 의료/복지 사업 텍스트를 구조화합니다.")
     parser.add_argument("--url", type=str, help="크롤링할 웹페이지 URL")
     parser.add_argument("--file", type=str, help="로컬 HTML 파일 경로")
     parser.add_argument("--output", type=str, default="structured_output.json", help="출력 JSON 파일 경로")
     parser.add_argument("--model", type=str, default="gpt-4o-mini", help="사용 모델 (예: gpt-4o, gpt-4o-mini)")
-
     args = parser.parse_args()
 
-    if not args.url and not args.file:
-        print("\n" + "=" * 80)
-        print("LLM 기반 구조화 테스트")
-        print("=" * 80)
-        args.url = input("웹페이지 URL을 입력하세요 (없으면 엔터): ").strip() or None
-        if not args.url:
-            args.file = input("로컬 HTML 파일 경로를 입력하세요: ").strip()
-        args.output = input("출력 파일명 (기본 structured_output.json): ").strip() or "structured_output.json"
-
     crawler = LLMStructuredCrawler(model=args.model)
-
     try:
         if args.url:
             data = crawler.crawl_and_structure(url=args.url)
@@ -506,9 +408,4 @@ def main():
         print(f"\n[완료] {args.output} 저장")
     except Exception as e:
         print(f"[ERROR] 처리 실패: {e}")
-        import traceback
-        traceback.print_exc()
-
-
-if __name__ == "__main__":
-    main()
+        import traceback; traceback.print_exc()

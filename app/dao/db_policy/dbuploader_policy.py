@@ -9,56 +9,28 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import app.dao.utils_db as utils_db
 
-# --------------------------------
-# 1. 인자 파서
-# --------------------------------
 def build_argparser():
-    p = argparse.ArgumentParser(
-        description="구조화 JSON을 documents/embeddings 테이블에 적재하는 로더"
-    )
-    p.add_argument(
-        "--file", "-f",
-        default="app/output/ebogun.json",
-        help="적재할 JSON 파일 경로 (default: app/output/ebogun.json)"
-    )
-    p.add_argument(
-        "--reset",
-        choices=["none", "truncate"],
-        default="none",
-        help="로딩 전에 테이블 리셋 방식 (none|truncate). default: none"
-    )
-    p.add_argument(
-        "--model",
-        default="text-embedding-3-small",
-        help="임베딩 모델명 (default: text-embedding-3-small)"
-    )
-    p.add_argument(
-        "--commit-every",
-        type=int,
-        default=50,
-        help="N개 문서마다 커밋 (default: 50)"
-    )
+    p = argparse.ArgumentParser(description="구조화 JSON을 documents/embeddings 테이블에 적재하는 로더")
+    p.add_argument("--file","-f", default="app/output/ebogun.json",
+                   help="적재할 JSON 파일 경로 (default: app/output/ebogun.json)")
+    p.add_argument("--reset", choices=["none","truncate"], default="none",
+                   help="로딩 전에 테이블 리셋 방식 (none|truncate). default: none")
+    p.add_argument("--model", default="text-embedding-3-small",
+                   help="임베딩 모델명 (default: text-embedding-3-small)")
+    p.add_argument("--commit-every", type=int, default=50,
+                   help="N개 문서마다 커밋 (default: 50)")
     return p
 
-# --------------------------------
-# 2. 환경 변수 로드
-# --------------------------------
 load_dotenv()
 DB_URL = os.getenv("DATABASE_URL")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 if not DB_URL:
-    utils_db.eprint("환경변수 DATABASE_URL이 필요합니다.")
-    sys.exit(1)
+    utils_db.eprint("환경변수 DATABASE_URL이 필요합니다."); sys.exit(1)
 if not OPENAI_API_KEY:
-    utils_db.eprint("환경변수 OPENAI_API_KEY가 필요합니다.")
-    sys.exit(1)
-
+    utils_db.eprint("환경변수 OPENAI_API_KEY가 필요합니다."); sys.exit(1)
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# -------------------------------
-# 3. 스키마 보강
-# -------------------------------
+# 스키마 보강: eval_target/eval_content 추가 (기존 eval_overall 유지 안 함)
 ALTER_DOCUMENTS_SQL = """
 ALTER TABLE documents
     ADD COLUMN IF NOT EXISTS title TEXT,
@@ -71,7 +43,8 @@ ALTER TABLE documents
     ADD COLUMN IF NOT EXISTS sitename TEXT,
     ADD COLUMN IF NOT EXISTS weight INTEGER DEFAULT 0,
     ADD COLUMN IF NOT EXISTS eval_scores JSONB,
-    ADD COLUMN IF NOT EXISTS eval_overall INTEGER,
+    ADD COLUMN IF NOT EXISTS eval_target INTEGER,
+    ADD COLUMN IF NOT EXISTS eval_content INTEGER,
     ADD COLUMN IF NOT EXISTS llm_reinforced BOOLEAN DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS llm_reinforced_sources JSONB,
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
@@ -80,68 +53,40 @@ ALTER TABLE documents
 def ensure_documents_schema(cur):
     cur.execute(ALTER_DOCUMENTS_SQL)
 
-# -------------------------------
-# 4. 전처리 함수
-# -------------------------------
 def preprocess_title(title: str) -> str:
-    """제목 임베딩 강건화를 위해 원문 + 띄어쓰기 제거 버전 병합"""
-    if not title:
-        return ""
+    if not title: return ""
     no_space = title.replace(" ", "")
     return f"{title.strip()} {no_space}"
 
-# --------------------------------
-# 5. 임베딩 함수
-# --------------------------------
 def get_embedding(text: str, model: str):
-    if not text or text.strip() == "":
-        return None
-    resp = client.embeddings.create(
-        model=model,
-        input=text.replace("\n", " ")
-    )
+    if not text or text.strip() == "": return None
+    resp = client.embeddings.create(model=model, input=text.replace("\n"," "))
     return resp.data[0].embedding
 
-# --------------------------------
-# 6. 테이블 리셋
-# --------------------------------
 def reset_tables(cur, mode: str):
-    """
-    mode == 'truncate' 인 경우:
-      - 외래키를 고려해 embeddings → documents 순으로 TRUNCATE
-      - RESTART IDENTITY + CASCADE
-    """
     if mode == "truncate":
         cur.execute("TRUNCATE TABLE embeddings, documents RESTART IDENTITY CASCADE;")
 
-# --------------------------------
-# 7. 메인 로직
-# --------------------------------
 def main():
     args = build_argparser().parse_args()
-
     json_path = args.file
     reset_mode = args.reset
     model_name = args.model
     commit_every = max(1, args.commit_every)
 
     if not os.path.exists(json_path):
-        utils_db.eprint(f"입력 파일을 찾을 수 없습니다: {json_path}")
-        sys.exit(1)
+        utils_db.eprint(f"입력 파일을 찾을 수 없습니다: {json_path}"); sys.exit(1)
 
     with open(json_path, "r", encoding="utf-8") as f:
         try:
             data = json.load(f)
         except json.JSONDecodeError as e:
-            utils_db.eprint(f"JSON 파싱 오류: {e}")
-            sys.exit(1)
+            utils_db.eprint(f"JSON 파싱 오류: {e}"); sys.exit(1)
 
-    # DB 연결
     conn = psycopg2.connect(DB_URL)
     cur = conn.cursor()
 
     try:
-        # 스키마 보강 + 선택적 리셋
         ensure_documents_schema(cur)
         if reset_mode != "none":
             reset_tables(cur, reset_mode)
@@ -149,63 +94,49 @@ def main():
             print(f"✅ 테이블 리셋 완료: {reset_mode}")
 
         inserted = 0
-
         for idx, item in enumerate(data, 1):
-            # llm_crawler.py 산출(표준 키)
-            title = item.get("title", "")
-            requirements = item.get("support_target", "")
-            benefits = item.get("support_content", "")
-            raw_text = item.get("raw_text", "")
-            url = item.get("source_url", "")
-            region = item.get("region", "")
+            title = item.get("title","")
+            requirements = item.get("support_target","")
+            benefits = item.get("support_content","")
+            raw_text = item.get("raw_text","")
+            url = item.get("source_url","")
+            region = item.get("region","")
 
-            # NEW: 평가 필드
-            eval_scores = item.get("eval_scores")
-            eval_overall = item.get("eval_overall")
+            # NEW: 0~10 원시점수 + 합성점수
+            eval_scores = item.get("eval_scores")             # dict or None
+            eval_target = item.get("eval_target")             # int or None
+            eval_content = item.get("eval_content")           # int or None
 
-            # 부가 필드
             policy_id = None
             sitename = utils_db.extract_sitename_from_url(url)
-            weight = utils_db.get_weight(region, sitename) if hasattr(utils_db, "get_weight") else 0
+            weight = utils_db.get_weight(region, sitename) if hasattr(utils_db,"get_weight") else 0
             llm_reinforced = False
             llm_reinforced_sources = None
 
-            # documents 삽입
-            cur.execute(
-                """
+            cur.execute("""
                 INSERT INTO documents
                     (title, requirements, benefits, raw_text, url, policy_id,
-                     region, sitename, weight, eval_scores, eval_overall,
+                     region, sitename, weight, eval_scores, eval_target, eval_content,
                      llm_reinforced, llm_reinforced_sources)
                 VALUES
                     (%s, %s, %s, %s, %s, %s,
-                     %s, %s, %s, %s, %s,
+                     %s, %s, %s, %s, %s, %s,
                      %s, %s)
                 RETURNING id;
-                """,
-                (
-                    title, requirements, benefits, raw_text, url, policy_id,
-                    region, sitename, weight, Json(eval_scores) if eval_scores is not None else None,
-                    eval_overall, llm_reinforced, llm_reinforced_sources
-                )
-            )
+            """, (
+                title, requirements, benefits, raw_text, url, policy_id,
+                region, sitename, weight, Json(eval_scores) if eval_scores is not None else None,
+                eval_target, eval_content, llm_reinforced, llm_reinforced_sources
+            ))
             doc_id = cur.fetchone()[0]
 
-            # --- title 전처리 후 임베딩 ---
-            title_modified = preprocess_title(title)
-
-            # 각 필드별 임베딩 생성
+            # Embeddings 생성
             emb_rows = []
-            for fname, text_value in (
-                ("title", title_modified),
-                ("requirements", requirements),
-                ("benefits", benefits),
-            ):
+            title_modified = preprocess_title(title)
+            for fname, text_value in (("title", title_modified), ("requirements", requirements), ("benefits", benefits)):
                 vec = get_embedding(text_value, model_name)
-                if vec:
-                    emb_rows.append((doc_id, fname, vec))
+                if vec: emb_rows.append((doc_id, fname, vec))
 
-            # 일괄 삽입
             if emb_rows:
                 execute_values(
                     cur,
@@ -215,8 +146,6 @@ def main():
                 )
 
             inserted += 1
-
-            # 주기적으로 커밋
             if inserted % commit_every == 0:
                 conn.commit()
                 print(f"💾 {inserted}개 문서 커밋 완료")
@@ -231,8 +160,7 @@ def main():
         utils_db.eprint(f"에러 발생으로 롤백했습니다: {e}")
         sys.exit(1)
     finally:
-        cur.close()
-        conn.close()
+        cur.close(); conn.close()
 
 if __name__ == "__main__":
     main()

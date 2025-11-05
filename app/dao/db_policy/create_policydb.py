@@ -156,6 +156,17 @@ def insert_embeddings(conn, rows, emb_table="embeddings", emb_col="embedding"):
         )
     conn.commit()
     return len(to_insert)
+def ensure_documents_indexes(conn):
+    sql = """
+    CREATE INDEX IF NOT EXISTS idx_documents_region        ON documents (region);
+    CREATE INDEX IF NOT EXISTS idx_documents_sitename      ON documents (sitename);
+    CREATE INDEX IF NOT EXISTS idx_documents_policy_id     ON documents (policy_id);
+    CREATE INDEX IF NOT EXISTS idx_documents_eval_overall  ON documents (eval_overall);
+    CREATE INDEX IF NOT EXISTS idx_documents_eval_scores_gin ON documents USING GIN (eval_scores);
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+    conn.commit()
 
 def main():
     dsn = dsn_from_env()
@@ -163,6 +174,7 @@ def main():
     try:
         ensure_pgvector(conn)
         ensure_documents_schema(conn)            # ← NEW: documents 컬럼 보장
+        ensure_documents_indexes(conn)   # ← 추가
         ensure_embeddings_vector_schema(conn, table="embeddings", col="embedding", dim=DIM)
         print("✅ documents/embeddings 스키마 보장 완료")
     except Exception as e:

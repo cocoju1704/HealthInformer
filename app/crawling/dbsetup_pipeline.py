@@ -1,12 +1,12 @@
 # app/crawling/dbsetup_pipeline.py
 # 목적: district, welfare, ehealth 크롤러 → DB 업로드 → policy_id 그루핑
 # 중간 JSON 없이, 메모리에서 바로 documents/embeddings에 삽입
-# 진행률(%) 출력 추가 버전
+# 진행률(%) 출력 + eval_scores/eval_overall 반영 + pgvector 안전삽입 버전
 
-import os, sys, argparse, traceback, json
+import os, sys, argparse, traceback
 from datetime import datetime
 import psycopg2
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, Json
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -21,6 +21,11 @@ from app.crawling.crawlers import run_all_crawlers as rac
 from app.dao.db_policy import dbuploader_policy as dbuploader
 from app.dao.db_policy import dbgrouper_policy as dbgrouper
 from app.dao.utils_db import eprint, extract_sitename_from_url, get_weight
+
+# ─────────────────────────────────────────────
+# 상수
+# ─────────────────────────────────────────────
+EMB_DIM = 1536  # text-embedding-3-small 기준. 바꾸면 여기/DB 모두 일치시켜야 함.
 
 
 def _ensure_dir(p: str):
@@ -55,7 +60,84 @@ def collect_ehealth(out_dir, categories=None, max_pages=None):
 
 
 # ─────────────────────────────────────────────
-# DB 업로드 (진행률 % 표시 추가)
+# DB 스키마 보장 (documents + embeddings/vector)
+# ─────────────────────────────────────────────
+def ensure_pgvector(conn):
+    with conn.cursor() as cur:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+    conn.commit()
+
+
+def ensure_documents_schema(conn):
+    """dbuploader.ensure_documents_schema 사용 (eval_scores/eval_overall 포함)"""
+    with conn.cursor() as cur:
+        dbuploader.ensure_documents_schema(cur)
+    conn.commit()
+
+
+def ensure_embeddings_vector_schema(conn, table="embeddings", col="embedding", dim=EMB_DIM):
+    """embeddings가 없으면 생성, 있으면 embedding을 VECTOR(dim)로 유지"""
+    with conn.cursor() as cur:
+        # 테이블 없으면 생성
+        cur.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.tables WHERE table_name = 'embeddings'
+            ) THEN
+                CREATE TABLE embeddings (
+                    id         BIGSERIAL PRIMARY KEY,
+                    doc_id     BIGINT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    field      TEXT NOT NULL CHECK (field IN ('title','requirements','benefits')),
+                    embedding  VECTOR(%s) NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE (doc_id, field)
+                );
+                CREATE INDEX IF NOT EXISTS idx_embeddings_doc_field ON embeddings (doc_id, field);
+            END IF;
+        END$$;
+        """, (dim,))
+        # 컬럼 타입이 벡터인지 확인
+        cur.execute("""
+            SELECT udt_name, data_type
+            FROM information_schema.columns
+            WHERE table_name=%s AND column_name=%s
+        """, (table, col))
+        r = cur.fetchone()
+        # 기존에 배열 등으로 되어 있으면 벡터로 강제 변환
+        if r and r[0] != "vector":
+            cur.execute(f"""
+                ALTER TABLE {table}
+                ALTER COLUMN {col} TYPE vector(%s)
+                USING (
+                    CASE
+                      WHEN {col} IS NULL THEN NULL
+                      ELSE ( '[' || array_to_string({col}, ',') || ']' )::vector
+                    END
+                );
+            """, (dim,))
+    conn.commit()
+
+
+def build_vector_literal(vec, dim=EMB_DIM):
+    """파이썬 list[float] -> pgvector 문자열 리터럴"""
+    if not vec:
+        return None
+    if len(vec) > dim:
+        vec = vec[:dim]
+    elif len(vec) < dim:
+        vec = list(vec) + [0.0] * (dim - len(vec))
+    parts = (f"{float(x):.7f}" for x in vec)
+    return "[" + ",".join(parts) + "]"
+
+
+# ─────────────────────────────────────────────
+# DB 업로드 (진행률 % 표시 + eval_* 반영 + pgvector 안전삽입)
+# ─────────────────────────────────────────────
+# ... (상단 import/상수 동일)
+
+# ─────────────────────────────────────────────
+# DB 업로드 (진행률 % 표시 + eval_* 반영 + pgvector 안전삽입)
 # ─────────────────────────────────────────────
 def upload_records(records, reset="none", emb_model="text-embedding-3-small", commit_every=50):
     if not records:
@@ -76,9 +158,14 @@ def upload_records(records, reset="none", emb_model="text-embedding-3-small", co
     cur = conn.cursor()
 
     total = len(records)
-    bar_length = 40  # 진행률 바 길이
+    bar_length = 40
 
     try:
+        # 스키마 보장 (documents에 eval_target/eval_content 추가 포함)
+        ensure_pgvector(conn)
+        ensure_documents_schema(conn)
+        ensure_embeddings_vector_schema(conn, table="embeddings", col="embedding", dim=EMB_DIM)
+
         if reset != "none":
             cur.execute("TRUNCATE TABLE embeddings, documents RESTART IDENTITY CASCADE;")
             conn.commit()
@@ -86,33 +173,44 @@ def upload_records(records, reset="none", emb_model="text-embedding-3-small", co
 
         inserted = 0
         for idx, item in enumerate(records, 1):
-            title = item.get("title", "")
-            requirements = item.get("support_target", "")
-            benefits = item.get("support_content", "")
-            raw_text = item.get("raw_text", "")
-            url = item.get("source_url", "")
-            region = item.get("region", "")
+            title = item.get("title","")
+            requirements = item.get("support_target","")
+            benefits = item.get("support_content","")
+            raw_text = item.get("raw_text","")
+            url = item.get("source_url","")
+            region = item.get("region","")
+
+            # NEW: 0~10 원시점수 + 합성점수
+            eval_scores  = item.get("eval_scores")
+            eval_target  = item.get("eval_target")
+            eval_content = item.get("eval_content")
+
             sitename = extract_sitename_from_url(url)
             weight = get_weight(region, sitename)
 
-            # documents
             cur.execute("""
-                INSERT INTO documents (title, requirements, benefits, raw_text, url, policy_id, region, sitename, weight, llm_reinforced, llm_reinforced_sources)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO documents
+                    (title, requirements, benefits, raw_text, url, policy_id,
+                     region, sitename, weight, eval_scores, eval_target, eval_content,
+                     llm_reinforced, llm_reinforced_sources)
+                VALUES
+                    (%s, %s, %s, %s, %s, %s,
+                     %s, %s, %s, %s, %s, %s,
+                     %s, %s)
                 RETURNING id;
-            """, (title, requirements, benefits, raw_text, url, None, region, sitename, weight, False, None))
+            """, (
+                title, requirements, benefits, raw_text, url, None,
+                region, sitename, weight, Json(eval_scores) if eval_scores is not None else None,
+                eval_target, eval_content, False, None
+            ))
             doc_id = cur.fetchone()[0]
 
-            # embeddings
             emb_rows = []
             title_emb_text = preprocess_title(title)
-            for fname, text_value in (
-                ("title", title_emb_text),
-                ("requirements", requirements),
-                ("benefits", benefits),
-            ):
+            for fname, text_value in (("title", title_emb_text), ("requirements", requirements), ("benefits", benefits)):
                 vec = get_embedding(text_value, emb_model)
                 if vec:
+                    # pgvector 삽입(문자열 리터럴 → ::vector 캐스팅은 dbsetup의 보조함수로도 가능)
                     emb_rows.append((doc_id, fname, vec))
 
             if emb_rows:
@@ -144,7 +242,6 @@ def upload_records(records, reset="none", emb_model="text-embedding-3-small", co
         cur.close()
         conn.close()
 
-
 # ─────────────────────────────────────────────
 # 그룹핑
 # ─────────────────────────────────────────────
@@ -175,7 +272,7 @@ def _get_runall_urls():
 # 메인
 # ─────────────────────────────────────────────
 def main():
-    p = argparse.ArgumentParser(description="통합 크롤링 → DB 업로드 → policy_id 그루핑 (in-memory, 진행률 표시)")
+    p = argparse.ArgumentParser(description="통합 크롤링 → DB 업로드 → policy_id 그루핑 (in-memory, 진행률 표시, eval_* 반영)")
     p.add_argument("--source", choices=["district", "welfare", "ehealth", "all"], default="district")
     p.add_argument("--urls", nargs="*", help="district 시작 URL들")
     p.add_argument("--out-dir", default=os.path.join(PROJECT_ROOT, "app", "crawling", "output"))
