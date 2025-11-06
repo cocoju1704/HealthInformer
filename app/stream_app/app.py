@@ -13,7 +13,8 @@ from src.widgets.auth_widgets import (
 from src.widgets.sidebar import render_sidebar
 from src.widgets.policy_card import render_policy_card
 from src.utils.template_loader import load_template, render_template, load_css
-from src.utils.session_manager import load_session, clear_session
+from src.utils.session_manager import load_session, update_login_status
+
 from src.backend_service import (
     api_send_chat_message,
     api_reset_password,
@@ -925,6 +926,8 @@ def render_my_page_modal():
     st.markdown("---")
 
     if st.button("→ 로그아웃", key="btn_logout", use_container_width=True):
+        # 로그아웃 상태 저장(세션 파일 유지)
+        update_login_status(is_logged_in=False)
         st.session_state["is_logged_in"] = False
         st.session_state["show_profile"] = False
         # 기본 메시지 초기화
@@ -936,8 +939,8 @@ def render_my_page_modal():
                 "timestamp": time.time(),
             }
         ]
-        clear_session()  # 세션 파일 삭제 부분 주석 처리
-        # st.success("로그아웃 되었습니다.")
+        # clear_session()  # 세션 파일 삭제 부분 주석 처리
+        st.success("로그아웃 되었습니다.")
         st.rerun()
 
 

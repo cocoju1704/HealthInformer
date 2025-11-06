@@ -2,7 +2,7 @@ import streamlit as st
 import datetime
 from typing import Dict, Any
 from src.backend_service import api_login, api_signup, api_check_id_availability
-from src.utils.session_manager import save_session, clear_session
+from src.utils.session_manager import save_session
 
 # 옵션 데이터
 GENDER_OPTIONS = ["남성", "여성"]
