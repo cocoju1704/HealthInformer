@@ -26,7 +26,7 @@ from base.llm_crawler import LLMStructuredCrawler
 class EHealthCrawler(BaseCrawler):
     """e보건소 전용 크롤러"""
 
-    def __init__(self, output_dir: str = "app/interface/crawling/output"):
+    def __init__(self, output_dir: str = "app/crawling/output"):
         """
         Args:
             output_dir: 결과 저장 디렉토리
@@ -359,8 +359,8 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="app/interface/crawling/output",
-        help="출력 디렉토리 (기본값: app/interface/crawling/output)",
+        default="app/crawling/output",
+        help="출력 디렉토리 (기본값: app/crawling/output)",
     )
 
     args = parser.parse_args()

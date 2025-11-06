@@ -33,7 +33,7 @@ class HealthCareWorkflow(BaseCrawler):
     """보건소 사이트 크롤링 및 구조화 워크플로우 (탭 처리 기능 포함 - 컨테이너 저장)"""
 
     def __init__(
-        self, output_dir: str = "app/interface/crawling/output", region: str = None
+        self, output_dir: str = "app/crawling/output", region: str = None
     ):
         """
         Args:
@@ -585,8 +585,8 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="app/interface/crawling/output",
-        help="결과를 저장할 기본 디렉토리. 최종 경로는 'app/interface/crawling/output/지역명' 형태가 됩니다.",
+        default="app/crawling/output",
+        help="결과를 저장할 기본 디렉토리. 최종 경로는 'app/crawling/output/지역명' 형태가 됩니다.",
     )
     parser.add_argument(
         "--region",

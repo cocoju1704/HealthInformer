@@ -6,7 +6,7 @@ import os
 import sys
 import traceback
 
-# 이 파일의 위치(app/interface/crawling/crawlers)를 기준으로
+# 이 파일의 위치(app/crawling/crawlers)를 기준으로
 # 프로젝트 최상위 경로(HealthInformer)를 찾아 시스템 경로에 추가합니다.
 project_root = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
@@ -54,7 +54,7 @@ def run_batch_crawling():
 
     # 절대 경로를 사용하여 output 디렉토리 위치를 명확히 지정합니다.
     base_output_dir = os.path.join(
-        project_root, "app", "interface", "crawling", "output"
+        project_root, "app", "crawling", "output"
     )
     print(f"총 {len(target_urls)}개의 보건소에 대한 크롤링을 시작합니다.")
     print("=" * 80)
