@@ -11,6 +11,7 @@ from src.backend_service import (
     api_get_user_info,
 )
 from src.utils.session_manager import save_session
+from src.backend_service import api_get_profiles, api_save_profiles
 
 
 GENDER_OPTIONS = ["남성", "여성"]
@@ -94,6 +95,9 @@ def render_login_tab():
                         "isActive": True,
                     }
                 ]
+                okp, profiles_list = api_get_profiles(data["userId"])
+                if okp and profiles_list:
+                    st.session_state["profiles"] = profiles_list
             else:
                 st.session_state["user_info"] = {"userId": data["userId"]}
             save_session(
@@ -124,6 +128,23 @@ def handle_signup_submit(signup_data: Dict[str, Any]):
         st.session_state["is_logged_in"] = True
         st.session_state["show_login_modal"] = False
         save_session(signup_data["userId"], user_info)
+        # 초기 프로필 리스트 생성/영구 저장
+        initial_profile = {
+            "id": signup_data["userId"],
+            "name": signup_data.get("name", ""),
+            "birthDate": str(signup_data.get("birthDate", "")),
+            "gender": signup_data.get("gender", ""),
+            "location": signup_data.get("location", ""),
+            "healthInsurance": signup_data.get("healthInsurance", ""),
+            "incomeLevel": int(signup_data.get("incomeLevel", 0)) if str(signup_data.get("incomeLevel", "")).isdigit() else signup_data.get("incomeLevel", 0),
+            "basicLivelihood": signup_data.get("basicLivelihood", "없음"),
+            "disabilityLevel": signup_data.get("disabilityLevel", "0"),
+            "longTermCare": signup_data.get("longTermCare", "NONE"),
+            "pregnancyStatus": signup_data.get("pregnancyStatus", "없음"),
+            "isActive": True,
+        }
+        st.session_state["profiles"] = [initial_profile]
+        api_save_profiles(signup_data["userId"], st.session_state["profiles"])
     return success, message
 
 

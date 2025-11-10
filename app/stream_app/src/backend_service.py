@@ -21,6 +21,7 @@ DATA_DIR = Path("data")
 USERS_FILE = DATA_DIR / "users.json"
 PROFILES_FILE = DATA_DIR / "profiles.json"
 COLLECTIONS_FILE = DATA_DIR / "collections.json"
+USER_PROFILES_FILE = DATA_DIR / "user_profiles.json"  # 사용자별 다중 프로필 저장
 
 # 데이터 디렉토리 생성
 DATA_DIR.mkdir(exist_ok=True)
@@ -42,7 +43,7 @@ def load_json(filepath: Path) -> Dict:
 def save_json(filepath: Path, data: Dict) -> None:
     """JSON 파일 저장"""
     with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
 
 
 def hash_password(password: str) -> str:
@@ -294,6 +295,72 @@ def api_get_user_info(user_id: str) -> Tuple[bool, Dict[str, Any]]:
     except Exception as e:
         logger.error(f"사용자 정보 조회 중 오류: {str(e)}")
         return False, {}
+
+
+def api_get_profiles(user_id: str) -> Tuple[bool, list]:
+    """
+    사용자별 다중 프로필 리스트 조회
+    """
+    try:
+        time.sleep(MOCK_API_DELAY)
+        profiles_map = load_json(USER_PROFILES_FILE)
+        return True, profiles_map.get(user_id, [])
+    except Exception as e:
+        logger.error(f"사용자 프로필 리스트 조회 중 오류: {str(e)}")
+        return False, []
+
+
+def api_save_profiles(user_id: str, profiles_list: list) -> Tuple[bool, str]:
+    """
+    사용자별 다중 프로필 리스트 저장
+    """
+    try:
+        time.sleep(MOCK_API_DELAY)
+        if not isinstance(profiles_list, list):
+            return False, "프로필 형식이 올바르지 않습니다"
+        # 프로필 정규화(직렬화 가능한 형태로 변환)
+        def _sanitize_profile(p: Dict[str, Any]) -> Dict[str, Any]:
+            q = dict(p) if isinstance(p, dict) else {}
+            bd = q.get("birthDate")
+            # birthDate를 문자열(YYYY-MM-DD)로 보장
+            try:
+                # date/datetime 객체 처리
+                if hasattr(bd, "isoformat"):
+                    q["birthDate"] = bd.isoformat()[:10]
+                elif isinstance(bd, str):
+                    q["birthDate"] = bd
+                else:
+                    q["birthDate"] = ""
+            except Exception:
+                q["birthDate"] = str(bd) if bd is not None else ""
+            # incomeLevel 정수 변환 시도
+            try:
+                q["incomeLevel"] = int(q.get("incomeLevel", 0))
+            except Exception:
+                pass
+            # 필수 키 기본값 보강
+            q.setdefault("gender", "")
+            q.setdefault("location", "")
+            q.setdefault("healthInsurance", "")
+            q.setdefault("basicLivelihood", "없음")
+            q.setdefault("disabilityLevel", "0")
+            q.setdefault("longTermCare", "NONE")
+            q.setdefault("pregnancyStatus", "없음")
+            q.setdefault("name", "")
+            q.setdefault("id", "")
+            q.setdefault("isActive", False)
+            return q
+
+        sanitized = [_sanitize_profile(p) for p in profiles_list]
+
+        profiles_map = load_json(USER_PROFILES_FILE)
+        profiles_map[user_id] = sanitized
+        save_json(USER_PROFILES_FILE, profiles_map)
+        logger.info(f"사용자 프로필 리스트 저장 완료: {user_id} ({len(profiles_list)}개)")
+        return True, "프로필이 저장되었습니다"
+    except Exception as e:
+        logger.error(f"사용자 프로필 리스트 저장 중 오류: {str(e)}")
+        return False, "프로필 저장 중 오류가 발생했습니다"
 
 
 def api_update_profile(user_id: str, profile_data: Dict[str, Any]) -> Tuple[bool, str]:

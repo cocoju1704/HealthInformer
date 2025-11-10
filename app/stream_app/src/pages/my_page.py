@@ -2,6 +2,8 @@ import uuid
 import time
 from datetime import date
 import streamlit as st
+from typing import Optional, Dict, Any
+from src.backend_service import api_get_profiles, api_save_profiles
 
 
 def _parse_birthdate(value):
@@ -44,6 +46,10 @@ def is_profile_incomplete(profile):
 def handle_profile_switch(profile_id):
     for p in st.session_state.profiles:
         p["isActive"] = p["id"] == profile_id
+    # 영구 저장
+    user_id = _get_user_id()
+    if user_id:
+        api_save_profiles(user_id, st.session_state.profiles)
     st.rerun()
 
 
@@ -58,6 +64,10 @@ def handle_delete_profile(profile_id):
     if is_deleted_active and new_profiles:
         new_profiles[0]["isActive"] = True
     st.session_state.profiles = new_profiles
+    # 영구 저장
+    user_id = _get_user_id()
+    if user_id:
+        api_save_profiles(user_id, st.session_state.profiles)
     st.rerun()
 
 
@@ -71,6 +81,10 @@ def handle_add_profile(new_profile_data):
     st.session_state.profiles.append(new_profile)
     st.session_state.isAddingProfile = False
     # st.session_state.newProfile = {}
+    # 영구 저장
+    user_id = _get_user_id()
+    if user_id:
+        api_save_profiles(user_id, st.session_state.profiles)
     st.rerun()
 
 
@@ -94,7 +108,18 @@ def handle_save_edit(edited_data):
     st.session_state.profiles = new_profiles
     st.session_state.editingProfileId = None
     st.session_state.editingData = {}
+    # 영구 저장
+    user_id = _get_user_id()
+    if user_id:
+        api_save_profiles(user_id, st.session_state.profiles)
     st.rerun()
+
+
+def _get_user_id() -> Optional[str]:
+    user_info = st.session_state.get("user_info", {})
+    if isinstance(user_info, dict):
+        return user_info.get("userId") or st.session_state.get("login_data", {}).get("userId")
+    return None
 
 
 def handle_cancel_edit():
@@ -203,6 +228,21 @@ def render_my_page_modal():
                 index=0 if np.get("basicLivelihood", "없음") == "없음" else 0,
                 key="add_basic",
             )
+            disability = st.selectbox(
+                "장애 등급 *",
+                options=["미등록", "심한 장애", "심하지 않은 장애"],
+                key="add_disability",
+            )
+            longterm = st.selectbox(
+                "장기요양 등급 *",
+                options=["NONE", "G1", "G2", "G3", "G4", "G5", "COGNITIVE"],
+                key="add_longterm",
+            )
+            pregnancy = st.selectbox(
+                "임신·출산 여부 *",
+                options=["없음", "임신중", "출산후12개월이내"],
+                key="add_pregnancy",
+            )
 
             col_submit, col_cancel = st.columns([1, 1])
             with col_submit:
@@ -215,9 +255,9 @@ def render_my_page_modal():
                         "healthInsurance": health,
                         "incomeLevel": income,
                         "basicLivelihood": basic,
-                        "disabilityLevel": np.get("disabilityLevel", "0"),
-                        "longTermCare": np.get("longTermCare", "NONE"),
-                        "pregnancyStatus": np.get("pregnancyStatus", "없음"),
+                        "disabilityLevel": "0" if disability == "미등록" else ("1" if disability == "심한 장애" else "2"),
+                        "longTermCare": longterm,
+                        "pregnancyStatus": pregnancy,
                     }
                     if not new_profile_data["name"] or not new_profile_data["location"]:
                         st.error("프로필 이름과 거주지는 필수 입력 항목입니다.")
