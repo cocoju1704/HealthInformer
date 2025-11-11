@@ -54,20 +54,20 @@ def _normalize_insurance_type(insurance_str: str) -> Optional[str]:
     if not insurance_str:
         return None
     mapping = {
-        "직장": "workplace",
-        "지역": "local",
-        "피부양": "dependent",
-        "의료급여": "medical_aid",
+        "직장": "WORKPLACE",
+        "지역": "LOCAL",
+        "피부양": "DEPENDENT",
+        "의료급여": "MEDICAL_AID",
     }
-    return mapping.get(insurance_str, insurance_str.lower())
+    return mapping.get(insurance_str)
 
 
 def _normalize_benefit_type(benefit_str: str) -> str:
     """기초생활보장 급여 종류를 DB 형식으로 변환"""
     if not benefit_str or benefit_str == "없음":
-        return "none"
-    mapping = {"생계": "livelihood", "의료": "medical", "주거": "housing", "교육": "education"}
-    return mapping.get(benefit_str, benefit_str.lower())
+        return "NONE"
+    mapping = {"생계": "LIVELIHOOD", "의료": "MEDICAL", "주거": "HOUSING", "교육": "EDUCATION"}
+    return mapping.get(benefit_str)
 
 
 def _normalize_sex(gender: str) -> Optional[str]:
@@ -95,8 +95,8 @@ def _normalize_disability_grade(disability_level: Any) -> Optional[int]:
 def _normalize_ltci_grade(long_term_care: str) -> str:
     """장기요양 등급 정규화"""
     if not long_term_care or long_term_care == "없음" or long_term_care == "해당없음":
-        return "none"
-    return long_term_care.lower()
+        return "NONE"
+    return long_term_care.upper()
 
 
 def _normalize_pregnant_status(pregnancy_status: str) -> Optional[bool]:
@@ -147,7 +147,7 @@ def create_user_and_profile(user_data: Dict[str, Any]) -> Tuple[bool, str]:
         median_income_ratio = _normalize_income_ratio(user_data.get("incomeLevel"))
         basic_benefit_type = _normalize_benefit_type(user_data.get("basicLivelihood", "없음"))
         disability_grade = _normalize_disability_grade(user_data.get("disabilityLevel", "0"))
-        ltci_grade = _normalize_ltci_grade(user_data.get("longTermCare", "none"))
+        ltci_grade = _normalize_ltci_grade(user_data.get("longTermCare", "NONE"))
         pregnant_or_postpartum12m = _normalize_pregnant_status(user_data.get("pregnancyStatus", "없음"))
 
         insert_query = """
