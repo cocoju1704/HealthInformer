@@ -27,11 +27,8 @@ from src.backend_service import (
     api_send_chat_message,
     api_reset_password,
 )
-from src.backend_service import (
-    api_get_profiles,
-    api_get_user_info,
-)  # api_get_profiles는 여전히 사용
-from src.db.database import get_user_by_username as api_get_user_info_db
+from src.backend_service import api_get_user_info
+from src.db.database import get_user_by_username as api_get_user_info_db, get_all_profiles_by_user_id
 from dotenv import load_dotenv
 
 
@@ -206,7 +203,7 @@ def main_app():
                 if st.session_state.get("profiles") is None or not st.session_state.get(
                     "profiles"
                 ):
-                    okp, profiles_list = api_get_profiles(user_uuid)
+                    okp, profiles_list = get_all_profiles_by_user_id(user_uuid)
                     if okp and profiles_list:
                         st.session_state["profiles"] = profiles_list
             # 세션 복원 완료

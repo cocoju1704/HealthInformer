@@ -10,14 +10,12 @@ from src.db.database import (
     create_user_and_profile as api_signup_db,
     get_user_by_username as api_get_user_info_db,
     check_user_exists,
-    get_user_password_hash,
+    get_user_password_hash, 
+    get_user_password_hash, 
+    get_all_profiles_by_user_id,
+    get_all_profiles_by_user_id,
 )
 
-# 백엔드 API 호출 함수 (로그인 등은 여전히 사용)
-from src.backend_service import (  # api_login은 더 이상 사용하지 않음
-    api_get_profiles,
-    api_save_profiles,
-)
 from src.utils.session_manager import save_session
 
 
@@ -154,23 +152,22 @@ def render_login_tab():
             st.session_state["auth_error"]["login"] = ""
 
             # DB에서 프로필 정보 조회
-            ok, user_info = api_get_user_info_db(data["userId"]) # username으로 조회
+            ok, user_info = api_get_user_info_db(data["userId"])  # username으로 조회
             if ok:
                 st.session_state["user_info"] = user_info
-                profile = user_info.copy()
-                profile["id"] = user_info.get("userId", data["userId"])
-                profile["isActive"] = True
-                st.session_state["profiles"] = [profile]
             else:
                 st.session_state["user_info"] = {"userId": data["userId"]}
 
-            # 저장된 프로필 리스트도 로드
-            ok_profiles, profiles_list = api_get_profiles(st.session_state.user_info.get("id")) # id(uuid)로 조회
+            # 🚨 [수정] 사용자의 모든 프로필 목록을 DB에서 직접 조회
+            user_uuid = st.session_state.user_info.get("id")
+            ok_profiles, profiles_list = get_all_profiles_by_user_id(user_uuid)
             if ok_profiles and profiles_list:
+                # 첫 번째 프로필을 활성 프로필로 설정
+                profiles_list[0]["isActive"] = True
                 st.session_state["profiles"] = profiles_list
 
             save_session(
-                st.session_state.user_info.get("id"), # 세션에는 id(uuid) 저장
+                st.session_state.user_info.get("id"),  # 세션에는 id(uuid) 저장
                 st.session_state.get("user_info", {"userId": data["userId"]}),
             )
         else:

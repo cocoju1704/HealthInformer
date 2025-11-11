@@ -2,8 +2,8 @@ import uuid
 import time
 from datetime import date
 import streamlit as st
-from typing import Optional, Dict, Any 
-from ..backend_service import api_get_profiles, api_save_profiles
+from typing import Optional, Dict, Any
+from ..backend_service import api_save_profiles
 from ..utils.template_loader import load_css
 
 
@@ -50,8 +50,8 @@ def handle_profile_switch(profile_id):
     # 영구 저장
     user_id = _get_user_id()
     if user_id:
-        api_save_profiles(user_id, st.session_state.profiles)
-    st.rerun()
+        st.rerun()
+
 
 
 def handle_delete_profile(profile_id):
@@ -68,8 +68,7 @@ def handle_delete_profile(profile_id):
     # 영구 저장
     user_id = _get_user_id()
     if user_id:
-        api_save_profiles(user_id, st.session_state.profiles)
-    st.rerun()
+        st.rerun()
 
 
 def handle_add_profile(new_profile_data):
@@ -78,15 +77,18 @@ def handle_add_profile(new_profile_data):
         return
     for p in st.session_state.profiles:
         p["isActive"] = False
-    new_profile = {"id": str(uuid.uuid4()), **new_profile_data, "isActive": True}
+    new_profile = {
+        "id": None,
+        **new_profile_data,
+        "isActive": True,
+    }  # 🚨 id를 None으로 설정하여 신규 프로필임을 명시
     st.session_state.profiles.append(new_profile)
     st.session_state.isAddingProfile = False
     # st.session_state.newProfile = {}
     # 영구 저장
     user_id = _get_user_id()
     if user_id:
-        api_save_profiles(user_id, st.session_state.profiles)
-    st.rerun()
+        st.rerun()
 
 
 def handle_start_edit(profile):
@@ -102,6 +104,7 @@ def handle_save_edit(edited_data):
             "프로필 이름과 거주지는 필수 입력 항목입니다. 편집 내용을 확인해주세요."
         )
         return
+    edited_data["id"] = pid  # 🚨 id가 누락되지 않도록 명시적으로 추가
     new_profiles = [
         ({**p, **edited_data} if p["id"] == pid else p)
         for p in st.session_state.profiles
@@ -383,4 +386,4 @@ def render_my_page_modal():
             st.session_state["is_logged_in"] = False
             st.session_state["show_profile"] = False
             st.success("로그아웃 되었습니다.")
-            st.rerun() # 채팅 내용은 state_manager에서 관리하므로 여기서는 초기화하지 않습니다.
+            st.rerun()  # 채팅 내용은 state_manager에서 관리하므로 여기서는 초기화하지 않습니다.
