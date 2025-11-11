@@ -1,6 +1,7 @@
 """PostgreSQL 데이터베이스 연결 및 CRUD 함수"""
 
 import os
+from passlib.hash import bcrypt  # 비밀번호 해시 검증을 위해 추가
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from typing import Dict, Any, Tuple, Optional, List
@@ -52,25 +53,22 @@ def _normalize_birth_date(birth_date: Any) -> Optional[str]:
     return str(birth_date)
 
 
-def _normalize_insurance_type(insurance_str: str) -> Optional[str]:
-    """건강보험 종류를 DB 형식으로 변환"""
+def _normalize_insurance_type(
+    insurance_str: str,
+) -> Optional[str]:  # auth.py에서 이미 매핑된 값 기대
+    """건강보험 종류를 DB 형식으로 변환 (auth.py에서 이미 매핑된 값 기대)"""
     if not insurance_str:
         return None
-    # DB enum에 한글 값이 직접 저장되어 있으므로 변환 없이 그대로 반환
+    # auth.py에서 이미 영문 ENUM 값으로 매핑되어 넘어온다고 가정
     return insurance_str
 
 
-def _normalize_benefit_type(benefit_str: str) -> str:
-    """기초생활보장 급여 종류를 DB 형식으로 변환"""
-    if not benefit_str or benefit_str == "없음":
+def _normalize_benefit_type(benefit_str: str) -> str:  # auth.py에서 이미 매핑된 값 기대
+    """기초생활보장 급여 종류를 DB 형식으로 변환 (auth.py에서 이미 매핑된 값 기대)"""
+    if not benefit_str:
         return "NONE"
-    mapping = {
-        "생계": "LIVELIHOOD",
-        "의료": "MEDICAL",
-        "주거": "HOUSING",
-        "교육": "EDUCATION",
-    }
-    return mapping.get(benefit_str, "NONE")
+    # auth.py에서 이미 영문 ENUM 값으로 매핑되어 넘어온다고 가정
+    return benefit_str
 
 
 def _normalize_sex(gender: str) -> Optional[str]:
@@ -142,18 +140,16 @@ def create_user_and_profile(user_data: Dict[str, Any]) -> Tuple[bool, str]:
     if not conn:
         return False, "데이터베이스 연결 실패"
 
-    # 폼에서 받은 데이터 분리 및 정규화
-    username = user_data.get("username", "").strip()
-    password = user_data.get(
+    # auth.py에서 이미 해싱된 비밀번호와 매핑된 필드명을 기대합니다.
+    username = user_data.get(
+        "username", ""
+    ).strip()  # auth.py에서 userId -> username으로 변경됨
+    password_hash = user_data.get(
         "password", ""
-    ).strip()  # 평문 비밀번호 (backend_service에서 해싱 필요)
+    ).strip()  # auth.py에서 이미 해싱된 비밀번호
 
-    if not username or not password:
+    if not username or not password_hash:
         return False, "아이디와 비밀번호는 필수 입력 항목입니다."
-
-    # 🚨 주의: 이 로직은 `backend_service.py`에서 호출될 때 비밀번호가 이미 해싱되었다고 가정합니다.
-    # 안전을 위해 password_hash로 변수 이름을 변경합니다.
-    password_hash = password  # 임시, 실제로는 해시된 값이어야 함
 
     # users.id는 TEXT 타입이므로 UUID를 사용
     new_user_id = str(uuid.uuid4())
@@ -174,31 +170,44 @@ def create_user_and_profile(user_data: Dict[str, Any]) -> Tuple[bool, str]:
             # 2. profiles 테이블 INSERT (기본 프로필)
             # users.id를 profiles.user_id로 사용하고, profiles.id(BIGINT)를 RETURNING으로 받습니다.
 
-            # --- 프로필 데이터 정규화 ---
+            # --- 프로필 데이터 정규화 (auth.py에서 이미 매핑된 필드명 사용) ---
             birth_date_str = _normalize_birth_date(user_data.get("birthDate"))
             sex = _normalize_sex(user_data.get("gender", ""))
-            # 실제 스키마 필드명에 맞게 user_data의 키를 변경
-            residency_sgg = user_data.get("residency_sgg", "").strip() or None
+            residency_sgg_code = (
+                user_data.get("residency_sgg_code", "").strip() or None
+            )  # auth.py에서 location -> residency_sgg로 변경됨
             insurance_type = _normalize_insurance_type(
-                user_data.get("insurance_type", "")
+                user_data.get(
+                    "insurance_type", ""
+                )  # auth.py에서 healthInsurance -> insurance_type으로 변경됨
             )
-            median_income = _normalize_income_ratio(user_data.get("median_income"))
+            median_income_ratio = _normalize_income_ratio(
+                user_data.get("incomeLevel")
+            )  # auth.py에서 incomeLevel -> median_income으로 변경됨
             basic_benefit_type = _normalize_benefit_type(
-                user_data.get("basic_benefit_type", "없음")
+                user_data.get(
+                    "basicLivelihood", "NONE"
+                )  # auth.py에서 basicLivelihood -> basic_benefit_type으로 변경됨
             )
             disability_grade = _normalize_disability_grade(
-                user_data.get("disability_grade", "0")
+                user_data.get(
+                    "disabilityLevel", "0"
+                )  # auth.py에서 disabilityLevel -> disability_grade로 변경됨
             )
-            ltci_grade = _normalize_ltci_grade(user_data.get("ltci_grade", "NONE"))
-            pregnant_or_postpartum = _normalize_pregnant_status(
-                user_data.get("pregnant_or_postpartum", "없음")
+            ltci_grade = _normalize_ltci_grade(
+                user_data.get("longTermCare", "NONE")
+            )  # auth.py에서 longTermCare -> ltci_grade로 변경됨
+            pregnant_or_postpartum12m = _normalize_pregnant_status(
+                user_data.get(
+                    "pregnancyStatus", "없음"
+                )  # auth.py에서 pregnancyStatus -> pregnant_or_postpartum으로 변경됨
             )
 
             profile_insert_query = """
             INSERT INTO profiles (
-                user_id, birth_date, sex, residency_sgg, insurance_type,
-                median_income, basic_benefit_type, disability_grade,
-                ltci_grade, pregnant_or_postpartum, updated_at
+                user_id, birth_date, sex, residency_sgg_code, insurance_type,
+                median_income_ratio, basic_benefit_type, disability_grade,
+                ltci_grade, pregnant_or_postpartum12m, updated_at
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             RETURNING id; 
@@ -208,13 +217,13 @@ def create_user_and_profile(user_data: Dict[str, Any]) -> Tuple[bool, str]:
                 new_user_id,
                 birth_date_str,
                 sex,
-                residency_sgg,
+                residency_sgg_code,
                 insurance_type,
-                median_income,
+                median_income_ratio,
                 basic_benefit_type,
                 disability_grade,
                 ltci_grade,
-                pregnant_or_postpartum,
+                pregnant_or_postpartum12m,
             )
 
             cursor.execute(profile_insert_query, profile_data_tuple)
@@ -299,21 +308,21 @@ def get_user_by_id(user_id: str) -> Tuple[bool, Dict[str, Any]]:
         # profiles 테이블만 조회하는 대신, users 테이블과 JOIN
         query = """
         SELECT 
-            u.id AS "userId",
+                u.username AS "userId", -- username을 userId로 반환
             p.birth_date AS "birthDate",
             p.sex AS "gender",
-            p.residency_sgg AS "location", -- 필드명 수정 (residency_sgg_code -> residency_sgg)
+            p.residency_sgg_code AS "location", 
             p.insurance_type AS "healthInsurance",
-            p.median_income AS "incomeLevel",
+            p.median_income_ratio AS "incomeLevel",
             p.basic_benefit_type AS "basicLivelihood",
             p.disability_grade AS "disabilityLevel",
             p.ltci_grade AS "longTermCare",
-            p.pregnant_or_postpartum AS "pregnancyStatus",
+            p.pregnant_or_postpartum12m AS "pregnancyStatus",
             u.username
-        FROM users u
-        LEFT JOIN profiles p ON u.id = p.user_id
-        WHERE u.id = %s
-        """
+            FROM users u
+            LEFT JOIN profiles p ON u.id = p.user_id
+            WHERE u.username = %s -- username으로 조회
+            """
 
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(query, (user_id,))
@@ -371,6 +380,27 @@ def get_user_by_id(user_id: str) -> Tuple[bool, Dict[str, Any]]:
             conn.close()
 
 
+# ✅ [추가] 비밀번호 해시 조회 함수
+def get_user_password_hash(username: str) -> Optional[str]:
+    """DB에서 사용자의 비밀번호 해시를 조회합니다."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        # 'users' 테이블과 'password_hash' 컬럼이 있다고 가정합니다.
+        query = "SELECT password_hash FROM users WHERE username = %s"
+        with conn.cursor() as cursor:
+            cursor.execute(query, (username,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    except Exception as e:
+        logger.error(f"비밀번호 해시 조회 중 오류: {username} - {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
 def check_user_exists(username: str) -> bool:
     """username이 이미 존재하는지 확인 (users 테이블 기준)"""
     conn = get_db_connection()
@@ -391,6 +421,41 @@ def check_user_exists(username: str) -> bool:
             conn.close()
 
 
-# 나머지 함수들은 그대로 유지합니다. (get_user_by_id, check_user_exists 등)
-# 단, 이 함수들도 user_id 대신 username을 사용하는 경우,
-# profiles가 아닌 users 테이블을 기준으로 조회하도록 수정해야 합니다. (위 함수들 수정 완료)
+def delete_user_account(username: str) -> Tuple[bool, str]:
+    """사용자 계정과 관련된 모든 데이터를 삭제합니다 (users, profiles, collections)."""
+    conn = get_db_connection()
+    if not conn:
+        return False, "데이터베이스 연결 실패"
+
+    try:
+        with conn.cursor() as cursor:
+            # users 테이블에서 username으로 id를 찾습니다.
+            cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+            user_record = cursor.fetchone()
+            if not user_record:
+                return False, "사용자를 찾을 수 없습니다."
+
+            user_id_to_delete = user_record[0]
+
+            # CASCADE 제약조건이 있다면 users 레코드만 삭제해도 관련 데이터가 삭제됩니다.
+            # 제약조건이 없다면 profiles, collections 등을 수동으로 삭제해야 합니다.
+            # 여기서는 users 테이블의 id를 사용하여 직접 삭제하는 방식을 가정합니다.
+
+            # users 테이블에서 삭제
+            cursor.execute("DELETE FROM users WHERE id = %s", (user_id_to_delete,))
+
+            conn.commit()
+            logger.info(f"회원 탈퇴 완료: {username} (user_id: {user_id_to_delete})")
+            return True, "회원 탈퇴가 완료되었습니다."
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"회원 탈퇴 중 오류 발생: {username} - {e}")
+        return False, "회원 탈퇴 처리 중 오류가 발생했습니다."
+    finally:
+        if conn:
+            conn.close()
+
+
+# 나머지 함수들은 그대로 유지합니다.

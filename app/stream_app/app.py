@@ -26,10 +26,9 @@ from src.utils.session_manager import load_session, update_login_status
 from src.backend_service import (
     api_send_chat_message,
     api_reset_password,
-    api_delete_account,
-    api_get_user_info,
 )
-from src.backend_service import api_get_profiles
+from src.backend_service import api_get_profiles # api_get_profiles는 여전히 사용
+from src.db.database import get_user_by_id as api_get_user_info_db
 
 
 # load_dotenv()
@@ -192,27 +191,16 @@ def main_app():
             # 프로필도 복원 (백엔드에서 조회)
             user_id = saved_session.get("user_id")
             if user_id:
-                ok, user_info = api_get_user_info(user_id)
+                # [수정] DB에서 직접 사용자 정보 조회
+                ok, user_info = api_get_user_info_db(user_id)
                 if ok:
                     st.session_state["user_info"] = user_info
-                    profile = user_info.get("profile", {}) or {}
-                    st.session_state["profiles"] = [
-                        {
-                            "id": user_id,
-                            "name": user_info.get("profile", {}).get("name", ""),
-                            "birthDate": profile.get("birthDate", ""),
-                            "gender": profile.get("gender", ""),
-                            "location": profile.get("location", ""),
-                            "healthInsurance": profile.get("healthInsurance", ""),
-                            "incomeLevel": profile.get("incomeLevel", 0),
-                            "basicLivelihood": profile.get("basicLivelihood", "없음"),
-                            "disabilityLevel": profile.get("disabilityLevel", "0"),
-                            "longTermCare": profile.get("longTermCare", "NONE"),
-                            "pregnancyStatus": profile.get("pregnancyStatus", "없음"),
-                            "isActive": True,
-                        }
-                    ]
-                    # 사용자별 다중 프로필 리스트가 있으면 그걸로 대체
+
+                # 사용자별 다중 프로필 리스트가 있으면 그걸로 대체
+                # api_get_profiles는 이제 DB를 조회하므로 그대로 사용 가능
+                if st.session_state.get("profiles") is None or not st.session_state.get(
+                    "profiles"
+                ):
                     okp, profiles_list = api_get_profiles(user_id)
                     if okp and profiles_list:
                         st.session_state["profiles"] = profiles_list

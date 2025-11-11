@@ -2,8 +2,8 @@ import uuid
 import time
 from datetime import date
 import streamlit as st
-from typing import Optional, Dict, Any
-from app.stream_app.src.backend_service import api_get_profiles, api_save_profiles
+from typing import Optional, Dict, Any 
+from ..backend_service import api_get_profiles, api_save_profiles
 
 
 def _parse_birthdate(value):
@@ -219,9 +219,9 @@ def render_my_page_modal():
             )
             income = st.number_input(
                 "소득 수준(숫자)",
-                min_value=0,
-                max_value=100000000,
-                value=np.get("incomeLevel", 0),
+                min_value=0.0,
+                max_value=100000000.0,
+                value=float(np.get("incomeLevel", 0.0)),
                 key="add_income",
             )
             basic = st.selectbox(
@@ -328,9 +328,9 @@ def render_my_page_modal():
             )
             income = st.number_input(
                 "소득 수준(숫자)",
-                min_value=0,
-                max_value=100000000,
-                value=ed.get("incomeLevel", 0),
+                min_value=0.0,
+                max_value=100000000.0,
+                value=float(ed.get("incomeLevel", 0.0)),
                 key="edit_income",
             )
             basic = st.selectbox(

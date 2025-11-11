@@ -10,6 +10,7 @@ from src.db.database import (
     create_user_and_profile as api_signup_db,
     get_user_by_id as api_get_user_info_db,
     check_user_exists,
+    get_user_password_hash,
 )
 
 # 백엔드 API 호출 함수 (로그인 등은 여전히 사용)
@@ -189,6 +190,12 @@ def handle_signup_submit(signup_data: Dict[str, Any]):
     if not signup_data.get("userId") or not signup_data.get("password"):
         return False, "필수 정보를 입력해주세요."
 
+    if signup_data.get("password") != signup_data.get("confirmPassword"):
+        return False, "비밀번호와 비밀번호 확인이 일치하지 않습니다."
+
+    signup_data["password"] = bcrypt.hash(
+        signup_data["password"].encode("utf-8")
+    )
     # ====================================================
     # ✅ [수정 핵심] ENUM 값 매핑 로직 (DB 전송 직전)
     # ====================================================
@@ -209,6 +216,10 @@ def handle_signup_submit(signup_data: Dict[str, Any]):
         return False, f"내부 오류: 알 수 없는 기초생활보장 급여 유형 '{livelihood_kr}'"
     signup_data["basicLivelihood"] = mapped_livelihood
 
+    # 필드명 매핑 (database.py의 create_user_and_profile 함수와 일치시키기 위함)
+    signup_data["username"] = signup_data.pop("userId")
+    signup_data["residency_sgg"] = signup_data.pop("location")
+    signup_data["insurance_type"] = signup_data.pop("healthInsurance")
     # ====================================================
 
     # 🚨 DB 직접 저장 함수 호출
@@ -217,65 +228,89 @@ def handle_signup_submit(signup_data: Dict[str, Any]):
     if success:
         # 회원가입 성공 시 자동 로그인 처리 및 세션 저장 로직은 동일
         user_info = {
-            # ... (세션에 저장할 기본 정보 정리 - 매핑된 영문 값 사용) ...
-            "userId": signup_data["userId"],
+            "userId": signup_data["username"],  # 세션에는 userId로 저장
             "name": signup_data.get("name", ""),
             "gender": signup_data.get("gender", ""),
             "birthDate": str(signup_data.get("birthDate", "")),
-            "location": signup_data.get("location", ""),
-            "healthInsurance": signup_data.get("healthInsurance", ""),  # 영문 ENUM 값
-            "incomeLevel": signup_data.get("incomeLevel", ""),
-            "basicLivelihood": signup_data.get("basicLivelihood", ""),  # 영문 ENUM 값
-            "disabilityLevel": signup_data.get("disabilityLevel", "0"),
-            "longTermCare": signup_data.get("longTermCare", "NONE"),
-            "pregnancyStatus": signup_data.get("pregnancyStatus", "없음"),
+            "location": signup_data.get("residency_sgg", ""),
+            "healthInsurance": signup_data.get("insurance_type", ""),  # 영문 ENUM 값
+            "incomeLevel": signup_data.get("median_income", ""),
+            "basicLivelihood": signup_data.get(
+                "basic_benefit_type", ""
+            ),  # 영문 ENUM 값
+            "disabilityLevel": signup_data.get("disability_grade", "0"),
+            "longTermCare": signup_data.get("ltci_grade", "NONE"),
+            "pregnancyStatus": signup_data.get("pregnant_or_postpartum", "없음"),
         }
         st.session_state["user_info"] = user_info
         st.session_state["is_logged_in"] = True
         st.session_state["show_login_modal"] = False
-
-        # 초기 프로필 리스트 생성/영구 저장 (생략)
         initial_profile = {
-            # ... (initial_profile 정리 로직은 동일) ...
-            **user_info,
-            "id": signup_data["userId"],
+            **{
+                k: v for k, v in user_info.items() if k != "userId"
+            },  # userId는 id로 매핑
+            "id": signup_data["username"],  # 프로필 id는 username과 동일하게
             "incomeLevel": (
-                int(signup_data.get("incomeLevel", 0))
-                if str(signup_data.get("incomeLevel", "")).isdigit()
-                else signup_data.get("incomeLevel", 0)
+                int(signup_data.get("median_income", 0))
+                if str(signup_data.get("median_income", "")).isdigit()
+                else signup_data.get("median_income", 0)
             ),
-            "isActive": True,
+            "isActive": True,  # 새로 생성된 프로필은 활성 상태
         }
         st.session_state["profiles"] = [initial_profile]
 
     return success, message
 
 
+# ... (앞부분 생략) ...
+
+
 def render_signup_tab():
     sdata = st.session_state["signup_form_data"]
     err = st.session_state["auth_error"].get("signup", "")
 
-    col_id, col_check = st.columns([7, 3])
-    with col_id:
-        user_id = st.text_input(
-            "아이디 *",
-            value=sdata.get("userId", ""),
-            key="signup_userid",
-            placeholder="아이디를 입력하세요",
-        )
-    with col_check:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("중복 확인", key="btn_check_id", use_container_width=True):
-            if user_id:
-                is_available, msg = api_check_id_availability(user_id)
-                if is_available:
-                    st.session_state["is_id_available"] = True
-                    st.success(msg)
-                else:
-                    st.session_state["is_id_available"] = False
-                    st.error(msg)
-
+    # 🚨 [수정] 아이디 입력 필드와 중복 확인 버튼을 form 내부로 이동합니다.
     with st.form("signup_form"):
+        # ===================================================================
+        # ✅ [이동 및 수정] ID 입력 및 중복 확인을 폼 내부로 가져옵니다.
+        # ===================================================================
+        col_id, col_check = st.columns([7, 3])
+        with col_id:
+            user_id = st.text_input(
+                "아이디 *",
+                value=sdata.get("userId", ""),
+                key="signup_userid",
+                placeholder="아이디를 입력하세요",
+            )
+        with col_check:
+            st.markdown("<br>", unsafe_allow_html=True)
+            # st.form 내부에서는 버튼의 key가 폼 제출 시에만 업데이트되므로,
+            # 중복 확인 로직은 별도의 폼 제출 로직 없이 처리하는 것이 좋습니다.
+            # 여기서는 편의를 위해 버튼 클릭 시 세션 상태를 업데이트하는 기존 로직을 유지하되,
+            # 폼 제출 로직과는 별개로 실행되도록 합니다.
+            if st.form_submit_button(
+                "아이디 중복 확인", key="btn_check_id_inside", use_container_width=True
+            ):
+                if user_id:
+                    is_available, msg = api_check_id_availability(user_id)
+                    if is_available:
+                        st.session_state["is_id_available"] = True
+                        st.success(msg)
+                    else:
+                        st.session_state["is_id_available"] = False
+                        st.error(msg)
+                # 중복 확인 버튼을 눌러도 전체 폼 제출로 간주되므로, 이후 제출 버튼 로직이 실행되지 않도록
+                # st.session_state.is_checking_id 상태를 활용하여 처리할 수도 있지만,
+                # 여기서는 사용자 경험을 위해 중복 확인 후 재실행(rerun)을 피하고
+                # 제출 버튼을 다시 누르도록 유도하는 방식을 선택합니다.
+
+        # 폼 내부에 아이디 중복 확인 결과 표시 (선택 사항)
+        if st.session_state.get("is_id_available") is False:
+            st.error("아이디 중복 확인이 필요하거나, 사용 불가능한 아이디입니다.")
+        elif st.session_state.get("is_id_available") is True:
+            st.success("사용 가능한 아이디입니다.")
+        # ===================================================================
+
         st.text_input(
             "비밀번호 *",
             type="password",
@@ -291,6 +326,7 @@ def render_signup_tab():
             key="signup_pw_confirm",
             placeholder="비밀번호를 다시 입력하세요",
         )
+        # ... (나머지 폼 필드는 동일) ...
         st.text_input(
             "이름 *",
             value=sdata.get("name", ""),
@@ -381,14 +417,41 @@ def render_signup_tab():
             placeholder="선택하세요",
         )
 
-        if err:
+        # 아이디 중복 확인 결과에 따라 재검토 메시지 표시
+        if st.session_state.get("is_id_available") is not True:
+            # 아이디가 사용 가능하다고 명시적으로 확인되지 않은 경우
+            err_msg = "회원가입을 완료하려면 아이디 중복 확인을 완료해주세요."
+            if err:
+                err_msg = err
+            st.error(err_msg)
+        elif err:  # 일반적인 다른 오류 메시지
             st.error(err)
 
         submitted = st.form_submit_button(
             "회원가입", use_container_width=True, type="primary"
         )
+
         if submitted:
+            # 폼 내부에서는 st.session_state에 값이 즉시 반영되므로,
+            # 모든 필수 필드가 올바르게 채워졌는지 다시 한번 확인합니다.
             user_id_value = st.session_state.get("signup_userid", "")
+
+            # 1차 유효성 검사 (필수 항목 및 ID 중복 확인)
+            if not user_id_value or not st.session_state.signup_pw:
+                st.session_state["auth_error"][
+                    "signup"
+                ] = "아이디와 비밀번호는 필수 정보를 입력해주세요."
+                st.rerun()
+                return
+
+            if st.session_state.get("is_id_available") is not True:
+                st.session_state["auth_error"][
+                    "signup"
+                ] = "아이디 중복 확인을 완료하고 사용 가능한 아이디를 선택해야 합니다."
+                st.rerun()
+                return
+
+            # ... (기존의 데이터 수집 및 제출 로직은 동일) ...
             signup_data = {
                 "userId": user_id_value,
                 "password": st.session_state.signup_pw,
@@ -404,6 +467,23 @@ def render_signup_tab():
                 "longTermCare": longterm_map.get(selected_longterm, "NONE"),
                 "pregnancyStatus": st.session_state.signup_pregnancy,
             }
+
+            # 비밀번호 일치 확인 (필수 항목이므로 여기서 체크)
+            if signup_data["password"] != signup_data["confirmPassword"]:
+                st.session_state["auth_error"][
+                    "signup"
+                ] = "비밀번호와 비밀번호 확인이 일치하지 않습니다."
+                st.rerun()
+                return
+
+            # 비밀번호 길이 확인 (8자 이상)
+            if len(signup_data["password"]) < 8:
+                st.session_state["auth_error"][
+                    "signup"
+                ] = "비밀번호는 8자 이상이어야 합니다."
+                st.rerun()
+                return
+
             success, message = handle_signup_submit(signup_data)
             if success:
                 st.success(message)
