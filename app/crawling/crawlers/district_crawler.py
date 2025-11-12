@@ -14,9 +14,8 @@ import json
 import os
 from datetime import datetime
 from typing import List, Dict
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
+import time
 
 # 공통 모듈 import
 import sys
@@ -25,14 +24,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import config
 import utils
 from utils import normalize_url
-from base.base_crawler import BaseCrawler
-from base.llm_crawler import LLMStructuredCrawler
+from base.parallel_crawler import BaseParallelCrawler
 from components.link_collector import LinkCollector
-from components.link_filter import LinkFilter
-from components.page_processor import PageProcessor
 
 
-class DistrictCrawler(BaseCrawler):
+class DistrictCrawler(BaseParallelCrawler):
     """보건소 사이트 크롤링 및 구조화 워크플로우"""
 
     def __init__(
@@ -47,25 +43,14 @@ class DistrictCrawler(BaseCrawler):
             region: 지역명 (예: "동작구"). None이면 URL에서 자동 추출 시도
             max_workers: 병렬 처리 워커 수 (기본값: 4)
         """
-        super().__init__()  # BaseCrawler 초기화
-        self.output_dir = output_dir
+        super().__init__(output_dir=output_dir, max_workers=max_workers)
         self.region = region
-        self.max_workers = max_workers
 
-        # 컴포넌트 초기화
+        # DistrictCrawler 전용 컴포넌트
         self.link_collector = LinkCollector()
-        self.link_filter = LinkFilter()
-        self.page_processor = PageProcessor()
-        self.llm_crawler = LLMStructuredCrawler(model="gpt-4o-mini")
-
-        # 출력 디렉토리 생성
-        os.makedirs(output_dir, exist_ok=True)
 
         # 탭 제외 로그 중복 방지용 (URL 기준으로 추적)
         self.excluded_tab_urls = set()
-
-        # 병렬 처리를 위한 thread-safe lock
-        self.lock = threading.Lock()
 
     def run(
         self,
@@ -343,7 +328,7 @@ class DistrictCrawler(BaseCrawler):
 
         try:
             # 1. 페이지 가져오기 (최종 URL도 함께 받음)
-            soup, final_url = self.llm_crawler.fetch_page(url, return_final_url=True)
+            soup, final_url = self.fetch_page(url, return_final_url=True)
             if not soup:
                 raise ValueError("페이지 내용을 가져올 수 없습니다.")
 
@@ -415,8 +400,6 @@ class DistrictCrawler(BaseCrawler):
             tab_name = tab_link_info["name"]
 
             # 중복 체크 (정규화된 URL 기준)
-            from utils import normalize_url
-
             normalized_tab_url = normalize_url(tab_url)
             if normalized_tab_url in processed_or_queued_urls:
                 continue

@@ -14,30 +14,25 @@ from typing import List, Dict, Optional
 import os
 import sys
 from datetime import datetime
-import time
 
 # 공통 모듈 import
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import config
-from base.base_crawler import BaseCrawler
-from base.llm_crawler import LLMStructuredCrawler
-from components.link_filter import LinkFilter
+import utils
+from utils import normalize_url
+from base.parallel_crawler import BaseParallelCrawler
 
 
-class EHealthCrawler(BaseCrawler):
+class EHealthCrawler(BaseParallelCrawler):
     """e보건소 전용 크롤러"""
 
-    def __init__(self, output_dir: str = "app/crawling/output"):
+    def __init__(self, output_dir: str = "app/crawling/output", max_workers: int = 4):
         """
         Args:
             output_dir: 결과 저장 디렉토리
+            max_workers: 병렬 처리 워커 수 (기본값: 4)
         """
-        super().__init__()  # BaseCrawler 초기화
-        self.output_dir = output_dir
-        self.llm_crawler = LLMStructuredCrawler(model="gpt-4o-mini")
-        self.link_filter = LinkFilter()  # 키워드 필터링 컴포넌트
-
-        os.makedirs(output_dir, exist_ok=True)
+        super().__init__(output_dir=output_dir, max_workers=max_workers)
 
     def get_list_page_url(self, category_name: str, page_index: int = 1) -> str:
         """
@@ -280,6 +275,48 @@ class EHealthCrawler(BaseCrawler):
             print(f"    ✗ 크롤링 실패: {e}")
             return None
 
+    def _process_article_with_tabs(self, article_info: Dict, idx: int, total: int) -> tuple:
+        """
+        게시글 처리 및 탭 링크 감지 (병렬 처리용)
+
+        Args:
+            article_info: 게시글 정보
+            idx: 현재 인덱스
+            total: 전체 개수
+
+        Returns:
+            (success, result, tab_links) 튜플
+        """
+        log_buffer = []
+        url = article_info["url"]
+        name = article_info.get("name", "제목없음")
+
+        log_buffer.append(f"\n[{idx}/{total}] 처리 시도: {name}")
+        log_buffer.append(f"  URL: {url}")
+        log_buffer.append("    -> 내용 구조화 진행...")
+
+        # BaseParallelCrawler의 process_page_with_tabs 사용
+        success, structured_data, tab_links, final_url = self.process_page_with_tabs(
+            url=url,
+            region="전국",
+            title=name,
+            log_buffer=log_buffer,
+        )
+
+        if success:
+            result = structured_data.model_dump()
+            log_buffer.append("  [SUCCESS] 성공")
+        else:
+            result = structured_data  # error_info
+            log_buffer.append(f"  [ERROR] 실패")
+
+        # 로그 출력
+        with self.lock:
+            for line in log_buffer:
+                print(line)
+
+        return success, result, tab_links
+
     def run_workflow(
         self,
         categories: List[str] = None,
@@ -327,31 +364,66 @@ class EHealthCrawler(BaseCrawler):
                 )
                 return
 
-        # 2단계: 각 게시글 크롤링 및 구조화
+        # 2단계: 각 게시글 크롤링 및 구조화 (병렬 처리)
         print("\n[2단계] 게시글 크롤링 및 구조화 중...")
+        print(f"  - 병렬 워커 수: {self.max_workers}")
         print("-" * 80)
 
         all_results = []
-        success_count = 0
-        fail_count = 0
+        failed_urls = []
+        processed_count = 0
+        processed_or_queued_urls = [normalize_url(link["url"]) for link in links]
 
-        for idx, article_info in enumerate(links, 1):
-            print(
-                f"\n진행: {idx}/{len(links)} - {article_info['category']}: {article_info['name']}"
-            )
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_article = {
+                executor.submit(self._process_article_with_tabs, article, idx, len(links)): article
+                for idx, article in enumerate(links, 1)
+            }
 
-            result = self.crawl_and_structure_article(article_info)
+            for future in as_completed(future_to_article):
+                article_info = future_to_article[future]
+                try:
+                    success, result, tab_links = future.result()
 
-            if result:
-                all_results.append(result)
-                success_count += 1
-                print("  ✓ 완료")
-            else:
-                fail_count += 1
+                    if success:
+                        with self.lock:
+                            all_results.append(result)
 
-            # API 제한 고려하여 약간의 지연
-            if idx < len(links):
-                time.sleep(1)
+                        # 탭 링크 처리
+                        if tab_links:
+                            with self.lock:
+                                for tab_link in tab_links:
+                                    normalized_tab = normalize_url(tab_link["url"])
+                                    if normalized_tab not in processed_or_queued_urls:
+                                        # 키워드 필터링
+                                        if config.KEYWORD_FILTER["mode"] != "none":
+                                            passed, reason = self.link_filter.check_keyword_filter(
+                                                tab_link["name"],
+                                                whitelist=config.KEYWORD_FILTER.get("whitelist"),
+                                                blacklist=config.KEYWORD_FILTER.get("blacklist"),
+                                                mode=config.KEYWORD_FILTER["mode"],
+                                            )
+                                            if not passed:
+                                                continue
+
+                                        links.append(tab_link)
+                                        processed_or_queued_urls.append(normalized_tab)
+                                        new_future = executor.submit(
+                                            self._process_article_with_tabs,
+                                            tab_link,
+                                            len(links),
+                                            len(links)
+                                        )
+                                        future_to_article[new_future] = tab_link
+                    else:
+                        with self.lock:
+                            failed_urls.append(result)
+
+                except Exception as e:
+                    print(f"  [ERROR] Future 처리 중 오류: {e}")
+
+        success_count = len(all_results)
+        fail_count = len(failed_urls)
 
         # 3단계: 결과 저장/반환
         print("\n[3단계] 결과 저장/반환 중...")
