@@ -2,11 +2,9 @@ import uuid
 import time
 import streamlit as st
 
+from ..backend_service import api_delete_user_account, api_reset_password
+from ..db.database import get_user_password_hash
 from ..utils.session_manager import clear_session
-from ..db.database import (
-    delete_user_account as api_delete_account,
-    get_user_password_hash,
-)
 
 
 # 설정 setting 초기화
@@ -84,14 +82,17 @@ def toggle_delete_confirm(value):
 def handle_account_delete():
     user_uuid = None
     user_info = st.session_state.get("user_info", {})
-    if isinstance(user_info, dict):
-        user_uuid = user_info.get("id")  # UUID
-    if not user_uuid:
+
+    if not user_info or not isinstance(user_info, dict) or not user_info.get("id"):
         st.error("계정 정보를 찾을 수 없습니다.")
+        st.stop()  # 추가: 오류 발생 시 실행 중단
         return
 
-    success, message = api_delete_account(user_uuid)
+    # 'id' (UUID)만 사용하도록 수정
+    user_uuid = user_info.get("id")
 
+    # 새로 추가된 backend_service의 함수를 호출
+    success, message = api_delete_user_account(user_uuid)
     if success:
         st.success(f"🗑️ {message}")
         st.session_state.settings_modal_open = False
@@ -263,17 +264,10 @@ def render_settings_modal():
         )
         col_delete, col_cancel_delete = st.columns(2)
         with col_delete:
-            st.button(
-                "탈퇴하기",
-                key="delete_button_confirm",
-                on_click=handle_account_delete,
-                use_container_width=True,
-            )
+            if st.button("탈퇴하기", key="delete_button_confirm", use_container_width=True):
+                handle_account_delete()
+
         with col_cancel_delete:
-            st.button(
-                "취소",
-                key="delete_button_cancel",
-                on_click=toggle_delete_confirm,
-                args=(False,),
-                use_container_width=True,
-            )
+            if st.button("취소", key="delete_button_cancel", use_container_width=True):
+                toggle_delete_confirm(False)
+                st.rerun()

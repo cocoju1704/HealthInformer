@@ -1,18 +1,19 @@
 {
-  "user_id": "fbf9f169-7d52-486e-86ca-43310752008d",
+  "user_id": "f259c61d-0134-4d85-ad75-0d57c808e18f",
   "user_info": {
-    "id": "fbf9f169-7d52-486e-86ca-43310752008d",
-    "userId": "test1234",
-    "username": "test1234",
-    "birthDate": "1990-01-01",
-    "gender": "여성",
-    "location": "강남구",
+    "id": "f259c61d-0134-4d85-ad75-0d57c808e18f",
+    "userId": "test0123",
+    "username": "test0123",
+    "birthDate": "1977-03-23",
+    "gender": "남성",
+    "location": "경기도 가평군",
     "healthInsurance": "EMPLOYED",
-    "incomeLevel": 150.0,
-    "basicLivelihood": "LIVELIHOOD",
+    "incomeLevel": 50.0,
+    "basicLivelihood": "NONE",
     "disabilityLevel": "0",
     "longTermCare": "NONE",
-    "pregnancyStatus": "임신중"
+    "pregnancyStatus": "없음",
+    "main_profile_id": null
   },
-  "is_logged_in": false
+  "is_logged_in": true
 }

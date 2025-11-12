@@ -2,8 +2,13 @@ import uuid
 import time
 from datetime import date
 import streamlit as st
-from typing import Optional, Dict, Any
-from ..backend_service import api_save_profiles
+from typing import Optional, Dict, Any, List
+from ..backend_service import (
+    api_save_profiles,
+    api_get_all_profiles_by_user_id,
+    api_update_user_main_profile_id,
+    api_delete_profile,
+)
 from ..utils.template_loader import load_css
 
 
@@ -48,25 +53,56 @@ def handle_profile_switch(profile_id):
     for p in st.session_state.profiles:
         p["isActive"] = p["id"] == profile_id
     # 영구 저장
-    user_id = _get_user_id()
-    if user_id:
+    user_uuid = _get_user_id()
+    if user_uuid:
+        success, message = api_update_user_main_profile_id(user_uuid, profile_id)
+        if success:
+            st.success("활성 프로필이 변경되었습니다.")
+            # DB에서 최신 프로필 목록을 다시 가져와 세션 상태 업데이트 (isActive 반영)
+            _refresh_profiles_from_db()
+        else:
+            st.error(f"활성 프로필 저장 중 오류 발생: {message}")
         st.rerun()
 
 
 def handle_delete_profile(profile_id):
     if len(st.session_state.profiles) <= 1:
         st.warning("최소한 하나의 프로필은 남겨야 합니다.")
-        return
-    new_profiles = [p for p in st.session_state.profiles if p["id"] != profile_id]
-    is_deleted_active = next(
-        (p for p in st.session_state.profiles if p["id"] == profile_id), {}
-    ).get("isActive", False)
-    if is_deleted_active and new_profiles:
-        new_profiles[0]["isActive"] = True
-    st.session_state.profiles = new_profiles
-    # 영구 저장
-    user_id = _get_user_id()
-    if user_id:
+        return  # Do not proceed with deletion if only one profile exists
+
+    user_uuid = _get_user_id()
+    if user_uuid:
+        # DB에서 직접 프로필 삭제
+        success, message = api_delete_profile(profile_id)
+        if success:
+            st.success("프로필이 삭제되었습니다.")
+
+            # 삭제된 프로필이 활성 프로필이었다면, 새로운 활성 프로필 설정
+            is_active_deleted = any(
+                p["id"] == profile_id and p.get("isActive")
+                for p in st.session_state.profiles
+            )
+
+            # 로컬 세션에서도 삭제
+            st.session_state.profiles = [
+                p for p in st.session_state.profiles if p["id"] != profile_id
+            ]
+
+            if is_active_deleted and st.session_state.profiles:
+                # 남은 프로필 중 첫 번째를 새 활성 프로필로 지정
+                new_active_profile_id = st.session_state.profiles[0]["id"]
+                success_activate, msg_activate = api_update_user_main_profile_id(
+                    user_uuid, new_active_profile_id
+                )
+                if not success_activate:
+                    st.error(f"새 활성 프로필 설정 중 오류 발생: {msg_activate}")
+            elif not st.session_state.profiles:
+                # 모든 프로필이 삭제된 경우 main_profile_id를 NULL로 설정
+                api_update_user_main_profile_id(user_uuid, None)
+
+            _refresh_profiles_from_db()  # 삭제 및 활성 프로필 변경 후 프로필 목록 새로고침
+        else:
+            st.error(f"프로필 삭제 중 오류 발생: {message}")
         st.rerun()
 
 
@@ -85,8 +121,21 @@ def handle_add_profile(new_profile_data):
     st.session_state.isAddingProfile = False
     # st.session_state.newProfile = {}
     # 영구 저장
-    user_id = _get_user_id()
-    if user_id:
+    user_uuid = _get_user_id()
+    if user_uuid:
+        success, message, updated_profiles_list = api_save_profiles(
+            user_uuid, st.session_state.profiles
+        )
+        if success and updated_profiles_list is not None:
+            st.session_state.profiles = updated_profiles_list
+            # 새로 추가된 프로필을 활성 상태로 설정하고 DB에 반영
+            if st.session_state.profiles:
+                newly_added_profile_id = st.session_state.profiles[-1]["id"]
+                api_update_user_main_profile_id(user_uuid, newly_added_profile_id)
+                _refresh_profiles_from_db()  # Refresh to reflect new active state
+            st.success("새 프로필이 추가되었습니다.")
+        else:
+            st.error(f"프로필 추가 중 오류 발생: {message}")
         st.rerun()
 
 
@@ -112,10 +161,18 @@ def handle_save_edit(edited_data):
     st.session_state.editingProfileId = None
     st.session_state.editingData = {}
     # 영구 저장
-    user_id = _get_user_id()
-    if user_id:
-        api_save_profiles(user_id, st.session_state.profiles)
-    st.rerun()
+    user_uuid = _get_user_id()
+    if user_uuid:
+        success, message, updated_profiles_list = api_save_profiles(
+            user_uuid, st.session_state.profiles
+        )
+        if success and updated_profiles_list is not None:
+            st.session_state.profiles = updated_profiles_list
+            _refresh_profiles_from_db()  # Refresh to ensure consistency
+            st.success("프로필이 성공적으로 수정되었습니다.")
+        else:
+            st.error(f"프로필 수정 중 오류 발생: {message}")
+        st.rerun()
 
 
 def _get_user_id() -> Optional[str]:
@@ -129,6 +186,28 @@ def handle_cancel_edit():
     st.session_state.editingProfileId = None
     st.session_state.editingData = {}
     st.rerun()
+
+
+def _get_user_main_profile_id() -> Optional[int]:
+    """세션 상태에서 사용자의 main_profile_id를 조회합니다."""
+    user_info = st.session_state.get("user_info", {})
+    if isinstance(user_info, dict):
+        return user_info.get("main_profile_id")
+    return None
+
+
+def _refresh_profiles_from_db():
+    """DB에서 최신 프로필 목록을 가져와 세션 상태를 업데이트합니다."""
+    user_uuid = _get_user_id()
+    if user_uuid:
+        ok, profiles_list = api_get_all_profiles_by_user_id(user_uuid)
+        if ok and profiles_list:
+            main_profile_id = _get_user_main_profile_id()
+            for p in profiles_list:
+                p["isActive"] = p["id"] == main_profile_id
+            st.session_state.profiles = profiles_list
+            return True
+    return False
 
 
 def render_my_page_modal():
@@ -149,6 +228,10 @@ def render_my_page_modal():
 
     st.markdown("#### 프로필 관리")
     if not st.session_state.get("isAddingProfile", False):
+        # 프로필 목록이 비어있으면 DB에서 로드 시도
+        if not st.session_state.profiles:
+            _refresh_profiles_from_db()
+
         if st.button("➕ 프로필 추가", key="btn_add_profile", use_container_width=True):
             st.session_state["isAddingProfile"] = True
             st.session_state["newProfile"] = {}
@@ -352,10 +435,10 @@ def render_my_page_modal():
         with cols[1]:
             if st.button("선택", key=f"select_{profile['id']}"):
                 handle_profile_switch(profile["id"])
+                # handle_profile_switch already saves to DB and reruns
         with cols[2]:
             if st.button("삭제", key=f"del_{profile['id']}"):
                 handle_delete_profile(profile["id"])
-
     st.markdown("---")
 
     # 계정 관련 액션 (비밀번호 변경/회원 탈퇴/로그아웃)
@@ -375,7 +458,7 @@ def render_my_page_modal():
             # 설정 모달에서 탈퇴 확인을 처리
             st.session_state["show_profile"] = False
             st.session_state["settings_modal_open"] = True
-            st.session_state["show_delete_confirm"] = True
+            st.session_state.show_delete_confirm = True
             st.rerun()
     with col_logout:
         if st.button("→ 로그아웃", key="btn_logout", use_container_width=True):

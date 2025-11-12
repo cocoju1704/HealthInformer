@@ -153,6 +153,7 @@ def render_login_tab():
             ok, user_info = api_get_user_info_db(data["userId"])  # username으로 조회
             if ok:
                 st.session_state["user_info"] = user_info
+                st.session_state["user_info"]["main_profile_id"] = user_info.get("main_profile_id")
             else:
                 st.session_state["user_info"] = {"userId": data["userId"]}
 

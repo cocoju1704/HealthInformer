@@ -197,6 +197,7 @@ def main_app():
                 ok, user_info = api_get_user_info(user_uuid)  # UUID로 조회
                 if ok:
                     st.session_state["user_info"] = user_info
+                    st.session_state["user_info"]["main_profile_id"] = user_info.get("main_profile_id")
 
                 # 사용자별 다중 프로필 리스트가 있으면 그걸로 대체
                 # api_get_profiles는 이제 DB를 조회하므로 그대로 사용 가능
