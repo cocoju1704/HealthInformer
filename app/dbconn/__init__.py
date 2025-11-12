@@ -6,3 +6,4 @@ from .database import DatabaseManager, HealthSupportInfo
 
 __all__ = ["DatabaseManager", "HealthSupportInfo"]
 
+

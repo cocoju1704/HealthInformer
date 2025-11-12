@@ -78,13 +78,6 @@ class DatabaseManager:
         self.database_url = database_url
         self.engine = create_engine(database_url, echo=False)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
-        
-        # 테이블 생성
-        self.create_tables()
-
-    def create_tables(self):
-        """테이블 생성"""
-        Base.metadata.create_all(bind=self.engine)
 
     def get_session(self) -> Session:
         """세션 생성"""
@@ -262,4 +255,5 @@ class DatabaseManager:
             
         finally:
             session.close()
+
 
