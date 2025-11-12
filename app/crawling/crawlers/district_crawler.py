@@ -24,6 +24,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import config
 import utils
+from utils import normalize_url
 from base.base_crawler import BaseCrawler
 from base.llm_crawler import LLMStructuredCrawler
 from components.link_collector import LinkCollector
@@ -200,7 +201,11 @@ class DistrictCrawler(BaseCrawler):
         structured_data_list = []
         failed_urls = []
         links_to_process = list(initial_links)
-        processed_or_queued_urls = [link["url"] for link in initial_links]
+        # URL을 정규화하여 저장 (중복 방지)
+
+        processed_or_queued_urls = [
+            normalize_url(link["url"]) for link in initial_links
+        ]
         processed_count = 0
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -227,13 +232,21 @@ class DistrictCrawler(BaseCrawler):
                     link_info = future_to_link.pop(future)
 
                     try:
-                        success, structured_data, tab_links = future.result()
+                        success, structured_data, tab_links, final_url = future.result()
 
                         if success:
                             with self.lock:
                                 structured_data_list.append(
                                     structured_data.model_dump()
                                 )
+
+                                # 최종 URL을 processed_or_queued_urls에 추가 (리다이렉트 추적)
+                                if final_url:
+                                    normalized_final = normalize_url(final_url)
+                                    if normalized_final not in processed_or_queued_urls:
+                                        processed_or_queued_urls.append(
+                                            normalized_final
+                                        )
 
                             # 탭 링크 처리
                             if tab_links:
@@ -287,7 +300,7 @@ class DistrictCrawler(BaseCrawler):
         log_buffer.append(f"  URL: {url}")
 
         # 실제 처리 (로그 버퍼 전달)
-        success, result, tab_links = self._process_single_page(
+        success, result, tab_links, final_url = self._process_single_page(
             link_info, processed_count, total_estimate, log_buffer
         )
 
@@ -296,7 +309,7 @@ class DistrictCrawler(BaseCrawler):
             for log_line in log_buffer:
                 print(log_line)
 
-        return success, result, tab_links
+        return success, result, tab_links, final_url
 
     def _process_single_page(
         self,
@@ -329,13 +342,20 @@ class DistrictCrawler(BaseCrawler):
         page_start_time = time.time()
 
         try:
-            # 1. 페이지 가져오기
-            soup = self.llm_crawler.fetch_page(url)
+            # 1. 페이지 가져오기 (최종 URL도 함께 받음)
+            soup, final_url = self.llm_crawler.fetch_page(url, return_final_url=True)
             if not soup:
                 raise ValueError("페이지 내용을 가져올 수 없습니다.")
 
+            # 리다이렉트 감지 및 로깅
+            if final_url and final_url != url:
+                if normalize_url(final_url) != normalize_url(url):
+                    log_buffer.append(f"    !리다이렉트 감지: {url} → {final_url}")
+                    # 최종 URL을 link_info에 저장 (나중에 참조 가능)
+                    link_info["final_url"] = final_url
+
             # 2. 탭 메뉴 확인
-            tab_links = self.page_processor.find_tabs_on_page(soup, url)
+            tab_links = self.page_processor.find_tabs_on_page(soup, final_url or url)
 
             # 3. 제목 결정
             title_for_llm = self.page_processor.determine_page_title(
@@ -355,7 +375,8 @@ class DistrictCrawler(BaseCrawler):
 
             log_buffer.append(f"  [SUCCESS] 성공 (소요: {page_duration:.2f}초)")
 
-            return True, structured_data, tab_links
+            # 최종 URL을 반환 (리다이렉트 추적용)
+            return True, structured_data, tab_links, final_url
 
         except Exception as e:
             import traceback
@@ -371,7 +392,7 @@ class DistrictCrawler(BaseCrawler):
             log_buffer.append(f"  [ERROR] 실패: {e}")
             log_buffer.append(f"  오류 상세:\n{error_details}")
 
-            return False, error_info, []
+            return False, error_info, [], None
 
     def _add_tab_links_to_queue(
         self,
@@ -393,13 +414,11 @@ class DistrictCrawler(BaseCrawler):
             tab_url = tab_link_info["url"]
             tab_name = tab_link_info["name"]
 
-            # 중복 체크 (이미 처리되었거나 큐에 있음)
-            is_already_processed = any(
-                utils.are_urls_equivalent(existing_url, tab_url)
-                for existing_url in processed_or_queued_urls
-            )
+            # 중복 체크 (정규화된 URL 기준)
+            from utils import normalize_url
 
-            if is_already_processed:
+            normalized_tab_url = normalize_url(tab_url)
+            if normalized_tab_url in processed_or_queued_urls:
                 continue
 
             # 키워드 필터링 체크
@@ -421,9 +440,9 @@ class DistrictCrawler(BaseCrawler):
                     excluded_count += 1
                     continue
 
-            # 큐에 추가
+            # 큐에 추가 (정규화된 URL을 processed_or_queued_urls에 저장)
             links_to_process.append(tab_link_info)
-            processed_or_queued_urls.append(tab_url)
+            processed_or_queued_urls.append(normalized_tab_url)
             newly_added_count += 1
             print(f"      + 탭 링크 추가: {tab_name} ({tab_url})")
 

@@ -125,6 +125,7 @@ class LLMStructuredCrawler(BaseCrawler):
             "article",
             ".article",
             "[role='main']",
+            ".s_con_right",
         ]:
             content_area = soup_copy.select_one(selector)
             if content_area:
@@ -464,8 +465,15 @@ class LLMStructuredCrawler(BaseCrawler):
         title: Optional[str] = None,
     ) -> HealthSupportInfo:
         if url:
-            soup = self.fetch_page(url)
-            source_url = url
+            # 최종 URL도 받아서 리다이렉트 추적
+            result = self.fetch_page(url, return_final_url=True)
+            if isinstance(result, tuple):
+                soup, final_url = result
+                source_url = final_url if final_url else url
+            else:
+                # 하위 호환성: return_final_url=False인 경우
+                soup = result
+                source_url = url
         elif file_path:
             soup = self.parse_html_file(file_path)
             source_url = file_path

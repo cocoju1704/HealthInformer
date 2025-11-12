@@ -81,33 +81,45 @@ def get_base_url(url: str) -> str:
 def are_urls_equivalent(url1: str, url2: str) -> bool:
     """
     두 URL이 실질적으로 동일한지 비교 (정규화 후 비교)
-    - scheme, netloc, path, query parameter를 모두 고려
+    - scheme, netloc, path를 소문자로 비교
+    - query parameter를 순서와 상관없이 비교
     - fragment(#)는 무시
+    - trailing slash 무시
     """
     if not url1 or not url2:
         return False
+
+    # 정규화 함수를 사용하여 비교
+    return normalize_url(url1) == normalize_url(url2)
+
+
+def normalize_url(url: str) -> str:
+    """
+    URL을 정규화하여 중복 체크에 사용
+    - scheme, netloc, path를 소문자로 변환
+    - trailing slash 제거
+    - fragment(#) 제거
+    - query parameter는 유지
+
+    Args:
+        url: 정규화할 URL
+
+    Returns:
+        정규화된 URL
+    """
     try:
-        p1 = urlparse(url1)
-        p2 = urlparse(url2)
+        parsed = urlparse(url)
+        # scheme, netloc, path를 소문자로 변환하고 trailing slash 제거
+        normalized = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.lower().rstrip('/')}"
 
-        # scheme, netloc, path (trailing slash 무시) 비교
-        if (
-            p1.scheme.lower() != p2.scheme.lower()
-            or p1.netloc.lower() != p2.netloc.lower()
-            or p1.path.rstrip("/") != p2.path.rstrip("/")
-        ):
-            return False
+        # query parameter가 있으면 추가 (fragment는 제외)
+        if parsed.query:
+            normalized += f"?{parsed.query}"
 
-        # Query parameter 순서와 상관없이 비교
-        qs1 = parse_qs(p1.query)
-        qs2 = parse_qs(p2.query)
-        return qs1 == qs2
-        # fragment는 비교하지 않음 (p1.fragment, p2.fragment 무시)
+        return normalized
     except Exception:
-        # 파싱 오류 발생 시, 기본적인 문자열 비교로 대체 (fragment 제거)
-        cleaned_url1 = url1.split("#")[0].rstrip("/").lower()
-        cleaned_url2 = url2.split("#")[0].rstrip("/").lower()
-        return cleaned_url1 == cleaned_url2
+        # 파싱 오류 시 기본 정규화
+        return url.split("#")[0].rstrip("/").lower()
 
 
 def make_absolute_url(url: str, base_url: str) -> str:
@@ -138,6 +150,7 @@ def extract_link_from_element(
         link_element: BeautifulSoup 링크 요소
         base_url: 기준 URL
         seen_urls: 이미 수집된 URL 집합 (None이면 중복 체크 안 함)
+                   주의: seen_urls에는 정규화된 URL이 저장되어야 함
 
     Returns:
         {"name": str, "url": str} 또는 None (무효한 링크인 경우)
@@ -152,8 +165,11 @@ def extract_link_from_element(
     url = urljoin(base_url, href)
 
     # 중복 확인 (seen_urls가 제공된 경우에만)
-    if seen_urls is not None and url in seen_urls:
-        return None
+    # 정규화된 URL로 비교
+    if seen_urls is not None:
+        normalized = normalize_url(url)
+        if normalized in seen_urls:
+            return None
 
     return {"name": name, "url": url}
 
