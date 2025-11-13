@@ -26,8 +26,30 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 import psycopg
 from dotenv import load_dotenv
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 load_dotenv()
+
+EMBED_MODEL_NAME = "dragonkue/bge-m3-ko"
+EMBED_DEVICE = "cpu"
+_embedding_model: Optional[HuggingFaceEmbeddings] = None
+
+
+def _get_embedding_model() -> HuggingFaceEmbeddings:
+    global _embedding_model
+    if _embedding_model is None:
+        _embedding_model = HuggingFaceEmbeddings(
+            model_name=EMBED_MODEL_NAME,
+            model_kwargs={"device": EMBED_DEVICE},
+        )
+    return _embedding_model
+
+
+def _embed_query_vector(text: str) -> str:
+    """쿼리 텍스트를 PGVector에서 사용하는 문자열 표현의 벡터로 변환"""
+    model = _get_embedding_model()
+    vector = model.embed_query(text or "")
+    return "[" + ",".join(f"{v:.6f}" for v in vector) + "]"
 
 DB_URL = os.getenv("DATABASE_URL")
 if not DB_URL:
@@ -114,8 +136,8 @@ def fetch_profile_context(user_id: str) -> Optional[Dict[str, Any]]:
             if preg is True:
                 summary.append("임신/출산 12개월 이내")
             profile_ctx = {
-                "profile_id": pid,
-                "user_id": uid,
+                "profile_id": str(pid) if pid is not None else None,
+                "user_id": str(uid) if uid is not None else None,
                 "age": age,
                 "birth_date": birth_date.isoformat() if birth_date else None,
                 "sex": sex,
@@ -175,6 +197,76 @@ PRED_KEYWORDS = {
     "실직": "FINANCIAL_SHOCK",
 }
 
+SIMILAR_SEARCH_SQL = """
+    SELECT
+        d.id,
+        d.title,
+        d.requirements,
+        d.benefits,
+        d.region,
+        d.url,
+        1 - (e.embedding <=> %(query_embedding)s::vector) AS similarity
+    FROM documents d
+    JOIN embeddings e ON d.id = e.doc_id
+    WHERE (
+        %(residency_sgg_code)s::text IS NULL
+        OR d.region = %(residency_sgg_code)s::text
+    )
+    ORDER BY e.embedding <=> %(query_embedding)s::vector
+    LIMIT %(limit)s;
+"""
+
+
+def search_similar_documents(
+    query_text: str,
+    *,
+    residency_sgg_code: Optional[str] = None,
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    """
+    임베딩 기반으로 documents 테이블에서 유사한 항목을 검색한다.
+
+    Args:
+        query_text: 검색할 자연어 쿼리
+        residency_sgg_code: 사용자 거주지 코드(없으면 전체 대상)
+        limit: 반환할 최대 문서 수
+    """
+    query_text = (query_text or "").strip()
+    if not query_text or limit <= 0:
+        return []
+
+    embedding_str = _embed_query_vector(query_text)
+    params = {
+        "query_embedding": embedding_str,
+        "residency_sgg_code": residency_sgg_code,
+        "limit": limit,
+    }
+
+    with psycopg.connect(DB_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(SIMILAR_SEARCH_SQL, params)
+            rows = cur.fetchall()
+
+    docs: List[Dict[str, Any]] = []
+    for doc_id, title, requirements, benefits, region, url, similarity in rows:
+        docs.append(
+            {
+                "id": doc_id,
+                "title": title,
+                "requirements": requirements,
+                "benefits": benefits,
+                "region": region,
+                "url": url,
+                "similarity": float(similarity) if similarity is not None else None,
+            }
+        )
+
+    return docs
+
+
+
+
+
 # === fetch_collection_context(): profile_id 해석 후 사용 ===
 def fetch_collection_context(user_id: str, query_text: Optional[str], limit: int = 12) -> List[Dict[str, Any]]:
     # 먼저 최신 profile_id 확보
@@ -205,8 +297,8 @@ def fetch_collection_context(user_id: str, query_text: Optional[str], limit: int
     out = []
     for (tid, prof_id, subj, pred, obj, cs, code, onset, end, neg, conf, src, cat) in rows:
         out.append({
-            "id": tid,
-            "profile_id": prof_id,
+            "id": str(tid) if tid is not None else None,
+            "profile_id": str(prof_id) if prof_id is not None else None,
             "subject": subj,
             "predicate": pred,
             "object": obj,
@@ -216,7 +308,7 @@ def fetch_collection_context(user_id: str, query_text: Optional[str], limit: int
             "end_date": end.isoformat() if isinstance(end, date) else end,
             "negation": bool(neg) if neg is not None else False,
             "confidence": float(conf) if conf is not None else None,
-            "source_id": src,
+            "source_id": str(src) if src is not None else None,
             "created_at": cat.isoformat() if isinstance(cat, datetime) else str(cat),
         })
     return out
@@ -281,6 +373,30 @@ def retrieval_planner_node(state: State) -> State:
             cctx = [{"error": f"collection_fetch_failed: {type(e).__name__}", "detail": str(e)}]
         ret["collection_ctx"] = cctx
 
+    # 문서 유사도 검색 (사용자 질문 기반)
+    if required != "NONE" and input_text:
+        residency_sgg_code = None
+        profile_ctx = ret.get("profile_ctx")
+        if isinstance(profile_ctx, dict) and "error" not in profile_ctx:
+            residency_sgg_code = profile_ctx.get("residency_sgg_code")
+
+        try:
+            doc_ctx = search_similar_documents(
+                input_text,
+                residency_sgg_code=residency_sgg_code,
+                limit=5,
+            )
+        except Exception as e:
+            doc_ctx = [
+                {
+                    "error": f"document_search_failed: {type(e).__name__}",
+                    "detail": str(e),
+                }
+            ]
+
+        if doc_ctx:
+            ret["document_ctx"] = doc_ctx
+
     state["retrieval"] = ret
     return state
 
@@ -291,17 +407,17 @@ if __name__ == "__main__":
     # 가벼운 수동 테스트
     test_states: List[State] = [
         {
-            "user_id": os.getenv("TEST_USER_ID","u_demo_1"),
+            "user_id": os.getenv("TEST_USER_ID","fbf9f169-7d52-486e-86ca-43310752008d"),
             "input_text": "재난적의료비 대상인가요? 저는 의료급여2종이에요.",
             "router": {"required_rag": "BOTH"},
         },
         {
-            "user_id": os.getenv("TEST_USER_ID","u_demo_1"),
+            "user_id": os.getenv("TEST_USER_ID","fbf9f169-7d52-486e-86ca-43310752008d"),
             "input_text": "6월에 유방암 C50.9 진단, 항암 치료 중입니다.",
             "router": {"required_rag": "COLLECTION"},
         },
         {
-            "user_id": os.getenv("TEST_USER_ID","u_demo_1"),
+            "user_id": os.getenv("TEST_USER_ID","fbf9f169-7d52-486e-86ca-43310752008d"),
             "input_text": "안녕하세요",
             "router": {"required_rag": "NONE"},
         },
