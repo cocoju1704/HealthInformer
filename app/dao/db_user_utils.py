@@ -7,8 +7,8 @@ app/dao/db_user_utils.py
 - 기존 버전2: 독립 connection 기반 프로필/컬렉션 조회
 
 이 파일은 두 스타일을 모두 제공함:
-  * get_profile_by_id(cur, id) / get_profile_by_id_conn(id)
-  * get_collection_by_profile(cur, id) / get_collection_by_profile_conn(id)
+  * get_profile_by_id(cur, id) / get_profile_by_id_con(id)
+  * get_collection_by_profile(cur, id) / get_collection_by_profile_con(id)
 
 주의:
   - 정책 DB(documents/embeddings)는 포함되지 않음 (조회 전용)
@@ -18,7 +18,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from datetime import datetime, timezone
 import os
-import json
 
 from psycopg.types.json import Json
 import psycopg
@@ -68,7 +67,7 @@ PROFILE_COLUMNS: Tuple[str, ...] = (
 # -------------------------------
 # 프로필 조회 (cur, transaction 기반)
 # -------------------------------
-def get_profile_by_id_cur(cur, profile_id: int) -> Optional[Dict[str, Any]]:
+def get_profile_by_id(cur, profile_id: int) -> Optional[Dict[str, Any]]:
     sql = """
     SELECT id, user_id, name, birth_date, sex,
            residency_sgg_code, insurance_type,
@@ -127,9 +126,13 @@ def upsert_profile(cur, profile: Dict[str, Any]) -> int:
 
 
 # -------------------------------
-# 프로필 조회 (독립 connection 버전)
+# 프로필 조회 (독립 connection 버전, profile_id 기준)
 # -------------------------------
-def get_profile_by_id(profile_id: int) -> Optional[Dict[str, Any]]:
+def get_profile_by_id_con(profile_id: int) -> Optional[Dict[str, Any]]:
+    """
+    profile_id로 profiles 1건 조회.
+    (retrieval_planner / 기타 읽기 전용 용도)
+    """
     sql = """
     SELECT id, user_id, birth_date, sex, residency_sgg_code, insurance_type,
            median_income_ratio, basic_benefit_type, disability_grade,
@@ -167,7 +170,7 @@ def get_profile_by_id(profile_id: int) -> Optional[Dict[str, Any]]:
 # -------------------------------
 # 트랜잭션(cur) 기반 조회
 # -------------------------------
-def get_collection_by_profile_cur(cur, profile_id: int) -> List[Dict[str, Any]]:
+def get_collection_by_profile(cur, profile_id: int) -> List[Dict[str, Any]]:
     sql = """
     SELECT id, profile_id, subject, predicate, object,
            code_system, code
@@ -231,9 +234,12 @@ def upsert_collection(cur, profile_id: int, triples: List[Dict[str, Any]]) -> in
 
 
 # -------------------------------
-# 독립 connection 기반 조회
+# 독립 connection 기반 조회 (profile_id 기준)
 # -------------------------------
-def get_collection_by_profile(profile_id: int) -> List[Dict[str, Any]]:
+def get_collection_by_profile_con(profile_id: int) -> List[Dict[str, Any]]:
+    """
+    profile_id 기준으로 collections 전체 조회.
+    """
     sql = """
     SELECT id, profile_id, subject, predicate, object,
            code_system, code, onset_date, end_date,
@@ -269,8 +275,7 @@ def get_collection_by_profile(profile_id: int) -> List[Dict[str, Any]]:
 
 # ============================================================
 # 3) conversations / messages / embeddings
-# ============================================================
-# (기존 버전1 그대로 유지 — 트랜잭션 기반)
+#    (기존 버전1 그대로 유지 — 트랜잭션 기반)
 # ============================================================
 
 def upsert_conversation(
@@ -311,11 +316,8 @@ def bulk_insert_messages(
 ) -> int:
     """
     messages 시퀀스를 한 번에 INSERT.
-
-    - messages: State에 쌓인 전체 메시지 목록 (user/assistant/tool 모두 포함)
-    - start_turn_index: 기본 0.
-      실제로는 (conversation_id, turn_index, role) UNIQUE 제약이 있어
-      같은 턴이 이미 있으면 ON CONFLICT DO NOTHING 으로 스킵한다.
+    ON CONFLICT (conversation_id, turn_index, role) DO NOTHING 으로
+    동일 턴 중복 삽입을 방지한다.
     """
     rows = []
     idx = start_turn_index
@@ -347,7 +349,7 @@ def bulk_insert_messages(
                 role,
                 content,
                 tool_name,
-                Json(token_usage) if token_usage else None,
+                Json(token_usage) if token_usage is not None else None,
                 Json(meta_dict),
                 created_at,
             )
@@ -401,100 +403,24 @@ def bulk_insert_conversation_embeddings(
     )
     return len(rows)
 
+
 # ============================================================
-# 4) Retrieval Planner 전용 단일 호출 함수
+# 4) Retrieval Planner 전용 헬퍼 (profile_id 기반 래퍼)
 # ============================================================
 
-def fetch_profile_from_db(user_id: str) -> Optional[Dict[str, Any]]:
+def fetch_profile_from_db(profile_id: int) -> Optional[Dict[str, Any]]:
     """
-    user_id로 최신 프로필 1개 조회.
-    retrieval_planner에서 사용.
+    retrieval_planner에서 사용하는 profile 조회용 래퍼.
+    - profile_id 기준
+    - 내부적으로 get_profile_by_id를 그대로 호출
     """
-    sql = """
-        SELECT id, user_id, birth_date, sex, residency_sgg_code,
-               insurance_type, median_income_ratio, basic_benefit_type,
-               disability_grade, ltci_grade, pregnant_or_postpartum12m,
-               updated_at
-        FROM profiles
-        WHERE user_id = %s
-        ORDER BY updated_at DESC NULLS LAST, id DESC
-        LIMIT 1;
+    return get_profile_by_id_con(profile_id)
+
+
+def fetch_collections_from_db(profile_id: int) -> List[Dict[str, Any]]:
     """
-
-    with psycopg.connect(DB_URL) as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (user_id,))
-            row = cur.fetchone()
-            if not row:
-                return None
-
-            return {
-                "id": row[0],
-                "user_id": row[1],
-                "birth_date": row[2],
-                "sex": row[3],
-                "residency_sgg_code": row[4],
-                "insurance_type": row[5],
-                "median_income_ratio": float(row[6]) if row[6] is not None else None,
-                "basic_benefit_type": row[7],
-                "disability_grade": row[8],
-                "ltci_grade": row[9],
-                "pregnant_or_postpartum12m": bool(row[10]) if row[10] is not None else None,
-                "updated_at": row[11],
-            }
-
-
-def fetch_collections_from_db(user_id: str) -> List[Dict[str, Any]]:
+    retrieval_planner에서 사용하는 collections 조회용 래퍼.
+    - profile_id 기준
+    - 내부적으로 get_collection_by_profile를 그대로 호출
     """
-    user_id → 최신 profile_id → 해당 컬렉션 목록 반환.
-    retrieval_planner에서 사용.
-    """
-    # 먼저 최신 profile_id 조회
-    pid_sql = """
-        SELECT id FROM profiles
-        WHERE user_id = %s
-        ORDER BY updated_at DESC NULLS LAST, id DESC
-        LIMIT 1;
-    """
-
-    with psycopg.connect(DB_URL) as conn:
-        with conn.cursor() as cur:
-
-            cur.execute(pid_sql, (user_id,))
-            row = cur.fetchone()
-            if not row:
-                return []
-            profile_id = row[0]
-
-            # 실제 컬렉션 조회
-            sql = """
-                SELECT id, profile_id, subject, predicate, object,
-                       code_system, code, onset_date, end_date,
-                       negation, confidence, source_id, created_at
-                FROM collections
-                WHERE profile_id = %s
-                ORDER BY created_at ASC;
-            """
-
-            cur.execute(sql, (profile_id,))
-            rows = cur.fetchall()
-
-            results = []
-            for r in rows:
-                results.append({
-                    "id": r[0],
-                    "profile_id": r[1],
-                    "subject": r[2],
-                    "predicate": r[3],
-                    "object": r[4],
-                    "code_system": r[5],
-                    "code": r[6],
-                    "onset_date": r[7],
-                    "end_date": r[8],
-                    "negation": bool(r[9]) if r[9] else False,
-                    "confidence": float(r[10]) if r[10] is not None else None,
-                    "source_id": r[11],
-                    "created_at": r[12],
-                })
-
-            return results
+    return get_collection_by_profile_con(profile_id)

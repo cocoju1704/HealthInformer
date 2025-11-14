@@ -34,10 +34,8 @@ load_dotenv()
 # LangGraph
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-
 # 공통 State / 타입
 from app.langgraph.state.ephemeral_context import State, Message, RagSnippet
-
 # ─────────────────────────────────────────────────────────
 # 환경 변수
 # ─────────────────────────────────────────────────────────
@@ -280,7 +278,6 @@ def build_graph():
             END: END,
         },
     )
-
     # 인메모리 체크포인터 (thread_id 필요)
     checkpointer = MemorySaver()
     return graph.compile(checkpointer=checkpointer)
