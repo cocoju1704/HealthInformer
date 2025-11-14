@@ -13,6 +13,8 @@ python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 <br/>
 pydantic[email]==2.11.7
+<br/>
+bcrypt==4.0.1
 
 
 
