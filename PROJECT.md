@@ -236,7 +236,7 @@ app/frontend/
 #### `user.py`
 - **목적**: 사용자 인증 및 프로필 관리 API 엔드포인트 정의
 - **주요 기능**:
-  - `POST /register`: 새 사용자 회원가입 (email → username, username → 프로필 이름)
+  - `POST /register`: 새 사용자 회원가입
   - `POST /login`: 사용자 로그인 (JWT 토큰 발급)
   - `GET /profile`: 현재 사용자 프로필 조회
   - `PATCH /profile/{profile_id}`: 프로필 정보 수정
@@ -247,7 +247,6 @@ app/frontend/
   - `DELETE /delete`: 사용자 계정 삭제
 - **의존성**: `user_repository`, `auth` (JWT 처리)
 - **필드 매핑**:
-  - 프론트엔드 `email` → DB `users.username` (아이디)
   - 프론트엔드 `username` → DB `profiles.name` (사용자 이름)
   - 프론트엔드 `user_id` → DB `users.username` (아이디)
   - 프론트엔드 `name` → DB `profiles.name` (사용자 이름)
