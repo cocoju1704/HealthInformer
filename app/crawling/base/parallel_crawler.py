@@ -5,18 +5,21 @@
 """
 
 import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional, Callable, Tuple, Any
 from datetime import datetime
 import json
 
-from base.base_crawler import BaseCrawler
-from base.llm_crawler import LLMStructuredCrawler
-from components.link_filter import LinkFilter
-from components.page_processor import PageProcessor
-from utils import normalize_url
-import config
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from app.crawling.base.base_crawler import BaseCrawler
+from app.crawling.base.llm_crawler import LLMStructuredCrawler
+from app.crawling.components.link_filter import LinkFilter
+from app.crawling.components.page_processor import PageProcessor
+from app.crawling.utils import normalize_url
+from app.crawling import config
 
 
 def detect_redirect(original_url: str, final_url: str) -> Optional[str]:
@@ -64,13 +67,21 @@ class BaseParallelCrawler(BaseCrawler):
     ):
         """
         Args:
-            output_dir: 결과 저장 디렉토리
+            output_dir: 결과 저장 디렉토리 (상대 경로 또는 절대 경로)
             max_workers: 병렬 처리 워커 수
             model: LLM 모델명
         """
         super().__init__()
 
-        # 기본 설정
+        # output_dir을 절대 경로로 변환
+        # 상대 경로인 경우 프로젝트 루트 기준으로 변환
+        if not os.path.isabs(output_dir):
+            # 프로젝트 루트 찾기 (app 폴더의 부모)
+            current_file = os.path.abspath(__file__)
+            # base/parallel_crawler.py -> base -> crawling -> app -> 프로젝트 루트
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_file))))
+            output_dir = os.path.join(project_root, output_dir)
+
         self.output_dir = output_dir
         self.max_workers = max_workers
 

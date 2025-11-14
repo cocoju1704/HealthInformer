@@ -12,10 +12,10 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-import config
-import utils
-from utils import extract_link_from_element, normalize_url
-from base.base_crawler import BaseCrawler
+from app.crawling import config
+from app.crawling import utils
+from app.crawling.utils import extract_link_from_element, normalize_url
+from app.crawling.base.base_crawler import BaseCrawler
 
 
 class LinkCollector(BaseCrawler):

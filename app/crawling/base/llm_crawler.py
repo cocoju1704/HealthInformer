@@ -23,7 +23,7 @@ import re
 
 load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from base.base_crawler import BaseCrawler
+from app.crawling.base.base_crawler import BaseCrawler
 
 
 # ─────────────────────────────────────────────────────────────────────
