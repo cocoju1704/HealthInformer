@@ -2,7 +2,7 @@
 크롤러 공통 유틸리티 함수
 """
 
-from urllib.parse import urlparse, urljoin, parse_qs
+from urllib.parse import urlparse, urljoin
 from typing import Optional, Dict, Set
 import time
 from functools import wraps
@@ -41,10 +41,13 @@ def extract_region_from_url(url: str) -> str:
         "sb": "성북구",
         "songpa": "송파구",
         "yangcheon": "양천구",
+        "ep": "은평구",
         "ydp": "영등포구",
+        "jungnang": "중랑구",
         "seoul-agi": "서울시",
         "wis.seoul": "서울시",
         "e-health": "전국",
+        "nhis": "전국",
     }
 
     parsed = urlparse(url)
@@ -178,8 +181,10 @@ def extract_link_from_element(
 # 속도 측정 유틸리티
 # ============================================================
 
+
 class TimingStats:
     """속도 측정 통계를 저장하는 클래스"""
+
     def __init__(self):
         self.timings = {}
 
@@ -200,7 +205,7 @@ class TimingStats:
             "total": sum(times),
             "avg": sum(times) / len(times),
             "min": min(times),
-            "max": max(times)
+            "max": max(times),
         }
 
     def print_summary(self):
@@ -271,6 +276,7 @@ def timing_decorator(category: str):
     Args:
         category: 측정 카테고리 (통계 집계용)
     """
+
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -281,5 +287,7 @@ def timing_decorator(category: str):
             finally:
                 duration = time.time() - start_time
                 _global_timing_stats.add_timing(category, duration)
+
         return wrapper
+
     return decorator

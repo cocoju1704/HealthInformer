@@ -23,7 +23,7 @@ import re
 
 load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from base.base_crawler import BaseCrawler
+from app.crawling.base.base_crawler import BaseCrawler
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -127,6 +127,7 @@ class LLMStructuredCrawler(BaseCrawler):
             "[role='main']",
             ".s_con_right",
             ".content-container",
+            "sub-right",
         ]:
             content_area = soup_copy.select_one(selector)
             if content_area:
