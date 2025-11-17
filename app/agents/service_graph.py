@@ -34,10 +34,8 @@ load_dotenv()
 # LangGraph
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-
 # 공통 State / 타입
 from app.langgraph.state.ephemeral_context import State, Message, RagSnippet
-
 # ─────────────────────────────────────────────────────────
 # 환경 변수
 # ─────────────────────────────────────────────────────────
@@ -182,7 +180,7 @@ except Exception:
 
 # 6) answer_llm
 try:
-    from app.langgraph.nodes.answer_llm import answer as answer_llm_node
+    from app.langgraph.nodes.llm_answer_creator import answer as answer_llm_node
 except Exception:
     def answer_llm_node(state: State) -> Dict[str, Any]:
         ui = state.get("user_input") or ""
@@ -280,7 +278,6 @@ def build_graph():
             END: END,
         },
     )
-
     # 인메모리 체크포인터 (thread_id 필요)
     checkpointer = MemorySaver()
     return graph.compile(checkpointer=checkpointer)
