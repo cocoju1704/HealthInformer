@@ -60,6 +60,7 @@ orjson==3.10.13
 ormsgpack==1.11.0
 packaging==24.2
 passlib[bcrypt]==1.7.4
+passlib[bcrypt]==1.7.4
 pillow==12.0.0
 propcache==0.2.1
 psycopg[binary]==3.2.12
@@ -72,6 +73,7 @@ pydantic-settings==2.7.1
 pydantic_core==2.27.2
 pypdf==5.1.0
 python-dotenv==1.0.1
+python-jose[cryptography]==3.3.0
 python-jose[cryptography]==3.3.0
 python-multipart==0.0.20
 PyYAML==6.0.2
@@ -102,10 +104,13 @@ typing_extensions==4.12.2
 tzdata==2025.2
 urllib3==2.3.0
 uvicorn[standard]==0.34.0
+uvicorn[standard]==0.34.0
 wheel==0.45.1
 xxhash==3.6.0
 yarl==1.18.3
 zstandard==0.23.0
+
+# ===== 두 번째 리스트에서 추가된 라이브러리들 =====
 
 # ===== 두 번째 리스트에서 추가된 라이브러리들 =====
 accelerate==1.10.1
