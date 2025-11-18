@@ -97,6 +97,28 @@ def _append_tool(msgs: List[Message], text: str, meta: Optional[Dict[str, Any]] 
         "meta": meta or {},
     })
 
+def _parse_median_income_ratio(raw: Any) -> Optional[float]:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+
+    # "120%" → "120"
+    if s.endswith("%"):
+        s = s[:-1].strip()
+
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+
+    # 0~10 사이는 비율(배)로 보고, 그 이상은 퍼센트로 본다
+    # 1.2 → 1.2  /  120 → 1.2
+    if v <= 10:
+        return v
+    else:
+        return v / 100.0
 
 # ─────────────────────────────────────────────────────────
 # Summarizer (간단 버전)
@@ -139,16 +161,50 @@ def _merge_profile(ephemeral: Dict[str, Any], db_profile: Optional[Dict[str, Any
     임시 프로필과 DB 프로필 병합.
     - ephemeral 값이 있으면 우선 적용
     - dict 형태 {value, confidence}면 confidence>=0.7 일 때만 반영
+    - 중위소득 비율(income_median_ratio/median_income_ratio)은
+      _parse_median_income_ratio 를 통해 숫자로 정규화해서
+      profiles.median_income_ratio 컬럼에만 저장한다.
     """
     merged: Dict[str, Any] = dict(db_profile or {})
     changes = 0
 
-    for k, v in (ephemeral or {}).items():
+    # 0) 기존 DB에 문자열로 들어있을 수도 있는 median_income_ratio 방어적으로 정규화
+    existing_mir = merged.get("median_income_ratio")
+    if isinstance(existing_mir, str):
+        parsed = _parse_median_income_ratio(existing_mir)
+        if parsed is not None:
+            merged["median_income_ratio"] = parsed
+
+    eph = dict(ephemeral or {})
+
+    # 1) 중위소득 비율 특수 처리
+    #    - ephemeral["income_median_ratio"] 또는 ["median_income_ratio"] 중 하나 사용
+    raw_ratio_field = eph.get("income_median_ratio")
+    if raw_ratio_field in (None, "", [], {}):
+        raw_ratio_field = eph.get("median_income_ratio")
+
+    if raw_ratio_field not in (None, "", [], {}):
+        conf = 1.0
+        raw_val = raw_ratio_field
+        if isinstance(raw_ratio_field, dict) and "value" in raw_ratio_field and "confidence" in raw_ratio_field:
+            conf = float(raw_ratio_field.get("confidence", 1.0))
+            raw_val = raw_ratio_field.get("value")
+
+        if conf >= 0.7:
+            parsed = _parse_median_income_ratio(raw_val)
+            if parsed is not None and merged.get("median_income_ratio") != parsed:
+                merged["median_income_ratio"] = parsed
+                changes += 1
+
+    # 2) 나머지 필드 일반 처리 (income/median 관련 키는 스킵)
+    for k, v in eph.items():
+        if k in ("income_median_ratio", "median_income_ratio"):
+            continue  # 위에서 별도 처리했음
+
         if v in (None, "", [], {}):
             continue
 
         conf = 1.0
-        # LLM 추출 결과를 {value, confidence}로 넣는 경우
         if isinstance(v, dict) and "value" in v and "confidence" in v:
             conf = float(v.get("confidence", 1.0))
             v = v.get("value")

@@ -106,7 +106,9 @@ class EphemeralContextState(TypedDict, total=False):
     # ── 입출력 ─────────────────────────────────────────
     user_input: Optional[str]           # 현재 턴의 사용자 입력
     answer: Optional[str]               # 현재 턴의 모델 응답 (최종 텍스트)
-
+    user_action: Optional[str]          # 사용자 액션 Literal["none","save","reset_save","reset_drop"]
+    # ── Router 결정 값 ──────────────────────────────────
+    router: Dict[str, Any]             # category, save_profile, save_collection, use_rag 등
     # ── 통계/메타 ───────────────────────────────────────
     model_stats: Dict[str, Any]         # 토큰 사용량, latency 등 집계
     persist_result: PersistResult       # 마지막 persist_pipeline 실행 결과

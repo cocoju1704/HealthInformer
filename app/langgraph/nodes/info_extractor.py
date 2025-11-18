@@ -23,7 +23,7 @@ ephemeral_profile 구조 예:
   {
     "age": {"value": 68, "confidence": 0.95},
     "region_gu": {"value": "강북구", "confidence": 0.9},
-    "income_median_ratio": {"value": 120, "confidence": 0.9},
+    "median_income_ratio": {"value": 120, "confidence": 0.9},
     ...
   }
 
@@ -107,7 +107,7 @@ class ExtractedProfile(BaseModel):
     birth_year: Optional[ProfileField] = None               # 출생 연도 (예: 1957)
     sex: Optional[ProfileField] = None                      # '남' / '여'
     region_gu: Optional[ProfileField] = None                # 거주 구 (예: '강북구', '동작구')
-    income_median_ratio: Optional[ProfileField] = None      # 중위소득 대비 퍼센트 (예: '120')
+    median_income_ratio: Optional[ProfileField] = None      # 중위소득 대비 퍼센트 (예: '120')
     basic_benefit_type: Optional[ProfileField] = None       # 기초생활보장 급여 구분 (생계/의료/주거/교육/기타)
     nhis_qualification: Optional[ProfileField] = None       # 건강보험 자격 (직장/지역/피부양/의료급여 등)
     disability_grade: Optional[ProfileField] = None         # 장애 정도/등급 (예: '장애 2급', '중증', '경증')
@@ -176,7 +176,7 @@ SYSTEM_PROMPT = """
     "birth_year": {...} | null,
     "sex": {...} | null,
     "region_gu": {...} | null,
-    "income_median_ratio": {...} | null,
+    "median_income_ratio": {...} | null,
     "basic_benefit_type": {...} | null,
     "nhis_qualification": {...} | null,
     "disability_grade": {...} | null,
@@ -244,7 +244,7 @@ def _merge_ephemeral_profile(
     set_field("birth_year", extracted.birth_year)
     set_field("sex", extracted.sex)
     set_field("region_gu", extracted.region_gu)
-    set_field("income_median_ratio", extracted.income_median_ratio)
+    set_field("median_income_ratio", extracted.median_income_ratio)
     set_field("basic_benefit_type", extracted.basic_benefit_type)
     set_field("nhis_qualification", extracted.nhis_qualification)
     set_field("disability_grade", extracted.disability_grade)
@@ -290,7 +290,6 @@ def _merge_ephemeral_collection(
     return {"triples": merged}
 
 
-@traceable
 def extract(state: State) -> InfoExtractorOutput:
     """
     LangGraph 노드 함수.
@@ -304,10 +303,9 @@ def extract(state: State) -> InfoExtractorOutput:
     출력:
       - ephemeral_profile: 병합된 프로필 오버레이
       - ephemeral_collection: 병합된 트리플 리스트
-      - messages: tool 로그 append
+      - messages: tool 로그 1줄 append (★ 기존 messages 전체를 리턴하지 않음)
     """
     text = (state.get("user_input") or "").strip()
-    msgs: List[Message] = list(state.get("messages") or [])
 
     router_info = state.get("router") or {}
     save_profile = bool(router_info.get("save_profile"))
@@ -315,29 +313,29 @@ def extract(state: State) -> InfoExtractorOutput:
 
     # 아무것도 추출할 필요가 없으면 no-op
     if not save_profile and not save_collection:
-        msgs.append({
+        tool_msg: Message = {
             "role": "tool",
             "content": "[info_extractor] skip (save_profile=False, save_collection=False)",
             "created_at": _now_iso(),
             "meta": {"router": router_info},
-        })
+        }
         return {
             "ephemeral_profile": dict(state.get("ephemeral_profile") or {}),
             "ephemeral_collection": dict(state.get("ephemeral_collection") or {"triples": []}),
-            "messages": msgs,
+            "messages": [tool_msg],
         }
 
     if not text:
-        msgs.append({
+        tool_msg: Message = {
             "role": "tool",
             "content": "[info_extractor] empty user_input; nothing extracted",
             "created_at": _now_iso(),
             "meta": {"router": router_info},
-        })
+        }
         return {
             "ephemeral_profile": dict(state.get("ephemeral_profile") or {}),
             "ephemeral_collection": dict(state.get("ephemeral_collection") or {"triples": []}),
-            "messages": msgs,
+            "messages": [tool_msg],
         }
 
     try:
@@ -352,7 +350,7 @@ def extract(state: State) -> InfoExtractorOutput:
         n_profile_fields = sum(1 for v in merged_profile.values() if isinstance(v, dict) and "value" in v)
         n_triples = len(merged_collection.get("triples") or [])
 
-        msgs.append({
+        tool_msg: Message = {
             "role": "tool",
             "content": "[info_extractor] extracted profile/collection",
             "created_at": _now_iso(),
@@ -361,26 +359,26 @@ def extract(state: State) -> InfoExtractorOutput:
                 "profile_fields": n_profile_fields,
                 "triples_total": n_triples,
             },
-        })
+        }
 
         return {
             "ephemeral_profile": merged_profile,
             "ephemeral_collection": merged_collection,
-            "messages": msgs,
+            "messages": [tool_msg],
         }
 
     except Exception as e:
         # 실패 시 안전 폴백: 아무것도 바꾸지 않고 로그만 남김
-        msgs.append({
+        tool_msg: Message = {
             "role": "tool",
             "content": "[info_extractor] error; keep previous state",
             "created_at": _now_iso(),
             "meta": {"error": str(e), "router": router_info},
-        })
+        }
         return {
             "ephemeral_profile": dict(state.get("ephemeral_profile") or {}),
             "ephemeral_collection": dict(state.get("ephemeral_collection") or {"triples": []}),
-            "messages": msgs,
+            "messages": [tool_msg],
         }
 
 

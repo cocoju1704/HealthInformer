@@ -22,6 +22,7 @@ from __future__ import annotations
 import os, sys
 from datetime import datetime, timezone
 from typing import Any, Dict
+from langsmith import traceable
 
 # 프로젝트 루트 경로를 sys.path에 추가
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -62,15 +63,15 @@ try:
     from app.langgraph.nodes.session_orchestrator import orchestrate as session_orchestrator_node
 except Exception:
     def session_orchestrator_node(state: State) -> Dict[str, Any]:
-        msgs = list(state.get("messages") or [])
-        msgs.append({
+        tool_msg = {
             "role": "tool",
             "content": "[session_orchestrator] dummy node executed",
             "created_at": _now_iso(),
             "meta": {},
-        })
+        }
         return {
-            "messages": msgs,
+            # ★ messages 전체 대신, 이번에 추가할 메시지만 리턴
+            "messages": [tool_msg],
             "session_id": state.get("session_id") or "sess-dummy",
             "end_session": False,
             "started_at": state.get("started_at") or _now_iso(),
@@ -200,19 +201,22 @@ try:
     from app.langgraph.nodes.persist_pipeline import persist as persist_pipeline_node
 except Exception:
     def persist_pipeline_node(state: State) -> Dict[str, Any]:
-        msgs = list(state.get("messages") or [])
-        msgs.append({
+        # 기존 messages는 건드리지 않고, 이번 노드 로그만 델타로 리턴
+        tool_msg = {
             "role": "tool",
             "content": "[persist_pipeline] dummy; no DB upsert",
             "created_at": _now_iso(),
             "meta": {},
-        })
+        }
+        # counts.messages는 state에 현재까지 쌓인 messages 길이를 쓰는 게 자연스럽기 때문에
+        messages_len = len(state.get("messages") or [])
+
         return {
-            "messages": msgs,
+            "messages": [tool_msg],
             "persist_result": {
                 "ok": False,
                 "conversation_id": None,
-                "counts": {"messages": len(msgs), "embeddings": 0},
+                "counts": {"messages": messages_len, "embeddings": 0},
                 "warnings": ["persist_pipeline dummy; DB disabled"],
             },
         }
@@ -221,7 +225,6 @@ except Exception:
 # ─────────────────────────────────────────────────────────
 # 그래프 구성
 # ─────────────────────────────────────────────────────────
-
 def build_graph():
     graph = StateGraph(State)
 
@@ -241,14 +244,28 @@ def build_graph():
     # Router → 분기
     def route_edge(state: State):
         nxt = (state or {}).get("next") or "info_extractor"
+        action = (state or {}).get("user_action")
+
         if nxt == "end":
-            # end_session 여부에 따라 persist 또는 END
-            return "persist_pipeline" if state.get("end_session") else END
+            # 1) 초기화 + 저장 안 함 → 그냥 종료 (persist X)
+            if action == "reset_drop":
+                return END
+
+            # 2) 초기화 + 저장 OR 기타 end_session=True → persist 후 종료
+            if action == "reset_save" or state.get("end_session"):
+                return "persist_pipeline"
+
+            # 3) 나머지(특수한 end지만 end_session=False) → 그냥 종료
+            return END
+
         if nxt == "retrieval_planner":
             return "retrieval_planner"
         if nxt == "info_extractor":
             return "info_extractor"
+        if nxt == "persist_pipeline":
+            return "persist_pipeline"
         return "info_extractor"
+
 
     graph.add_conditional_edges(
         "router",
@@ -286,7 +303,6 @@ def build_graph():
 # ─────────────────────────────────────────────────────────
 # 샘플 실행
 # ─────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     app = build_graph()
 
@@ -296,13 +312,7 @@ if __name__ == "__main__":
     out = app.invoke({
         "session_id": "sess-001",
         "profile_id": 1,
-        "user_input": "저는 중위소득 120%이고 당뇨가 있어요. 받을 수 있는 의료 지원이 궁금해요.",
-        "messages": [{
-            "role": "user",
-            "content": "안녕하세요",
-            "created_at": _now_iso(),
-            "meta": {},
-        }],
+        "user_input": "저는 중위소득 50%이고 당뇨가 있어요. 받을 수 있는 의료 지원이 궁금해요.",
         "rolling_summary": None,
         "end_session": False,
     }, config=cfg)
@@ -314,7 +324,6 @@ if __name__ == "__main__":
         "session_id": "sess-001",
         "profile_id": 1,
         "user_input": "오늘 대화 저장해줘.",
-        "messages": out.get("messages"),
         "rolling_summary": out.get("rolling_summary"),
         "end_session": True,
     }, config=cfg)
