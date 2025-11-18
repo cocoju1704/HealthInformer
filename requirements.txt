@@ -63,9 +63,10 @@ packaging==24.2
 passlib==1.7.4
 pillow==12.0.0
 propcache==0.2.1
-psycopg==3.2.12
-psycopg-binary==3.2.12
+# psycopg3 계열 (대화/세션/유저 DB용)
+psycopg[binary]==3.2.12
 psycopg-pool==3.2.7
+# psycopg2 계열 (기존 정책 DB 스크립트용)
 psycopg2-binary==2.9.11
 pyasn1==0.6.1
 pycparser==2.22
@@ -95,7 +96,6 @@ tenacity==9.0.0
 threadpoolctl==3.6.0
 tiktoken==0.8.0
 tokenizers==0.21.4
-torch==2.5.1
 tqdm==4.67.1
 transformers==4.47.1
 trustcall==0.0.39
