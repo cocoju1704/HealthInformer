@@ -51,6 +51,10 @@ except Exception:  # pragma: no cover
         return func
 
 from app.langgraph.state.ephemeral_context import State, Message
+from datetime import datetime, timezone
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 load_dotenv()
 
@@ -198,22 +202,63 @@ def _call_router_llm(text: str) -> RouterDecision:
     return decision
 
 
-@traceable
 def route(state: State) -> RouterOutput:
     """
     LangGraph 노드 함수.
 
     입력:
       - state["user_input"]: 현재 턴 사용자 발화
-      - state["messages"]  : 이전까지의 대화 로그
+      - state["messages"]  : 이전까지의 대화 로그 (★ 여기서 직접 수정하지 않음)
 
     출력:
       - state["router"]    : RouterDecision dict
-      - state["next"]      : "info_extractor" | "retrieval_planner" | "end" (현재는 info_extractor 고정)
-      - state["messages"]  : tool 로그 1줄 append
+      - state["next"]      : "info_extractor" | "retrieval_planner" | "end"
+      - state["messages"]  : tool 로그 1줄 append (★ 전체 리스트가 아니라 delta만)
     """
     text = (state.get("user_input") or "").strip()
-    msgs: list[Message] = list(state.get("messages") or [])
+    action = (state.get("user_action") or "none").strip()
+
+    # 1) 저장 버튼: 세션 유지 + persist_pipeline만 실행
+    if action == "save":
+        router_info = {
+            "category": "OTHER",
+            "save_profile": False,
+            "save_collection": False,
+            "use_rag": False,
+            "reason": "UI save button: 대화 내용은 그대로, DB에만 저장",
+        }
+        tool_msg: Message = {
+            "role": "tool",
+            "content": "[router] user_action=save → persist_pipeline으로 바로 이동",
+            "created_at": _now_iso(),
+            "meta": {},
+        }
+        return {
+            "router": router_info,
+            "next": "persist_pipeline",   # ★ 바로 persist 노드로
+            "messages": [tool_msg],
+        }
+
+    # 2) 초기화 버튼(저장/미저장 둘 다) → 흐름 종료로 보냄
+    if action in ("reset_save", "reset_drop"):
+        router_info = {
+            "category": "OTHER",
+            "save_profile": False,
+            "save_collection": False,
+            "use_rag": False,
+            "reason": f"UI reset button ({action})",
+        }
+        tool_msg: Message = {
+            "role": "tool",
+            "content": f"[router] user_action={action} → next=end",
+            "created_at": _now_iso(),
+            "meta": {},
+        }
+        return {
+            "router": router_info,
+            "next": "end",
+            "messages": [tool_msg],
+        }
 
     # 입력이 비어있으면 그냥 종료 방향
     if not text:
@@ -224,16 +269,16 @@ def route(state: State) -> RouterOutput:
             "use_rag": False,
             "reason": "빈 입력이라 아무 작업도 하지 않음",
         }
-        msgs.append({
+        tool_msg: Message = {
             "role": "tool",
             "content": "[router] empty input → end",
-            "created_at": "",
+            "created_at": _now_iso(),
             "meta": {"router": router_info},
-        })
+        }
         return {
             "router": router_info,
             "next": "end",
-            "messages": msgs,
+            "messages": [tool_msg],
         }
 
     try:
@@ -245,15 +290,12 @@ def route(state: State) -> RouterOutput:
             f"save_collection={decision.save_collection}, "
             f"use_rag={decision.use_rag}"
         )
-        msgs.append({
+        tool_msg: Message = {
             "role": "tool",
             "content": log_content,
-            "created_at": "",
+            "created_at": _now_iso(),
             "meta": {"router": router_dict},
-        })
-        # 현재 그래프 구조에서는 기본적으로 info_extractor로 흘려보내고,
-        # info_extractor / retrieval_planner 노드가 router 플래그를 참고해서
-        # 실제로 프로필/컬렉션 추출과 RAG 여부를 결정하도록 한다.
+        }
         next_node = "info_extractor"
 
     except Exception as e:
@@ -265,18 +307,18 @@ def route(state: State) -> RouterOutput:
             "use_rag": False,
             "reason": f"router LLM error: {e}",
         }
-        msgs.append({
+        tool_msg: Message = {
             "role": "tool",
             "content": "[router] error → fallback OTHER",
-            "created_at": "",
+            "created_at": _now_iso(),
             "meta": {"error": str(e), "router": router_dict},
-        })
+        }
         next_node = "info_extractor"
 
     return {
         "router": router_dict,
         "next": next_node,
-        "messages": msgs,
+        "messages": [tool_msg],
     }
 
 

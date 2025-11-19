@@ -88,10 +88,17 @@ def orchestrate(state: Dict[str, Any]) -> SessionOrchestratorOutput:
       - messages: tool 로그 1줄 이상 append
     """
     out: SessionOrchestratorOutput = {}
-    msgs: List[Message] = list(state.get("messages") or [])
+    msgs: List[Message] = []
 
     # 0) 사용자 요청 end_session 플래그 확인
-    user_requested_end = bool(state.get("end_session") is True)
+    user_action = (state.get("user_action") or "none").strip().lower()
+    is_reset_action = user_action in ["reset_save", "reset_drop"]
+    
+    # 기존 로직: end_session=True가 들어왔는지
+    user_requested_end_flag = bool(state.get("end_session") is True)
+
+    # 👉 둘 중 하나라도 참이면 "사용자 요청 종료"로 간주
+    user_requested_end = user_requested_end_flag or is_reset_action
 
     # 1) 세션 ID 확인
     sid = (state.get("session_id") or "").strip()

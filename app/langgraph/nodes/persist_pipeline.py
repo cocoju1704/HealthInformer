@@ -89,13 +89,44 @@ class PersistResult(TypedDict, total=False):
     warnings: List[str]
 
 
-def _append_tool(msgs: List[Message], text: str, meta: Optional[Dict[str, Any]] = None):
-    msgs.append({
+def _append_tool(msgs: List[Message], text: str, meta: Optional[Dict[str, Any]] = None) -> Message:
+    """
+    msgs 리스트에 tool 로그 1개를 append 하고, 그 Message를 반환.
+    - persist 내부에서는 cleaned(실제 DB 저장용)에만 추가하고
+      그래프로 리턴할 delta 리스트에는 반환값을 따로 모은다.
+    """
+    msg: Message = {
         "role": "tool",
         "content": text,
         "created_at": _now_iso(),
         "meta": meta or {},
-    })
+    }
+    msgs.append(msg)
+    return msg
+
+
+def _parse_median_income_ratio(raw: Any) -> Optional[float]:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+
+    # "120%" → "120"
+    if s.endswith("%"):
+        s = s[:-1].strip()
+
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+
+    # 0~10 사이는 비율(배)로 보고, 그 이상은 퍼센트로 본다
+    # 1.2 → 1.2  /  120 → 1.2
+    if v <= 10:
+        return v
+    else:
+        return v / 100.0
 
 
 # ─────────────────────────────────────────────────────────
@@ -139,16 +170,50 @@ def _merge_profile(ephemeral: Dict[str, Any], db_profile: Optional[Dict[str, Any
     임시 프로필과 DB 프로필 병합.
     - ephemeral 값이 있으면 우선 적용
     - dict 형태 {value, confidence}면 confidence>=0.7 일 때만 반영
+    - 중위소득 비율(income_median_ratio/median_income_ratio)은
+      _parse_median_income_ratio 를 통해 숫자로 정규화해서
+      profiles.median_income_ratio 컬럼에만 저장한다.
     """
     merged: Dict[str, Any] = dict(db_profile or {})
     changes = 0
 
-    for k, v in (ephemeral or {}).items():
+    # 0) 기존 DB에 문자열로 들어있을 수도 있는 median_income_ratio 방어적으로 정규화
+    existing_mir = merged.get("median_income_ratio")
+    if isinstance(existing_mir, str):
+        parsed = _parse_median_income_ratio(existing_mir)
+        if parsed is not None:
+            merged["median_income_ratio"] = parsed
+
+    eph = dict(ephemeral or {})
+
+    # 1) 중위소득 비율 특수 처리
+    #    - ephemeral["income_median_ratio"] 또는 ["median_income_ratio"] 중 하나 사용
+    raw_ratio_field = eph.get("income_median_ratio")
+    if raw_ratio_field in (None, "", [], {}):
+        raw_ratio_field = eph.get("median_income_ratio")
+
+    if raw_ratio_field not in (None, "", [], {}):
+        conf = 1.0
+        raw_val = raw_ratio_field
+        if isinstance(raw_ratio_field, dict) and "value" in raw_ratio_field and "confidence" in raw_ratio_field:
+            conf = float(raw_ratio_field.get("confidence", 1.0))
+            raw_val = raw_ratio_field.get("value")
+
+        if conf >= 0.7:
+            parsed = _parse_median_income_ratio(raw_val)
+            if parsed is not None and merged.get("median_income_ratio") != parsed:
+                merged["median_income_ratio"] = parsed
+                changes += 1
+
+    # 2) 나머지 필드 일반 처리 (income/median 관련 키는 스킵)
+    for k, v in eph.items():
+        if k in ("income_median_ratio", "median_income_ratio"):
+            continue  # 위에서 별도 처리했음
+
         if v in (None, "", [], {}):
             continue
 
         conf = 1.0
-        # LLM 추출 결과를 {value, confidence}로 넣는 경우
         if isinstance(v, dict) and "value" in v and "confidence" in v:
             conf = float(v.get("confidence", 1.0))
             v = v.get("value")
@@ -208,9 +273,9 @@ def _merge_collection(ephemeral: Any, db_coll: Optional[List[Dict[str, Any]]]) -
     for t in new_triples:
         subj = (t.get("subject") or "").strip()
         pred = (t.get("predicate") or "").strip()
-        obj  = (t.get("object") or "").strip()
-        cs   = (t.get("code_system") or "") or None
-        cd   = (t.get("code") or "") or None
+        obj = (t.get("object") or "").strip()
+        cs = (t.get("code_system") or "") or None
+        cd = (t.get("code") or "") or None
 
         if not subj or not pred or not obj:
             continue
@@ -286,23 +351,34 @@ def persist(
     LangGraph 노드: 세션 종료 시 호출.
     - Cleaner 동작은 (인자) > (환경변수) 순으로 결정.
     - DB upsert는 psycopg 트랜잭션 안에서 수행.
+
+    중요:
+      - state["messages"]는 그래프 전체에서 append-only로 관리되므로,
+        여기서는 그 전체를 읽어 DB에 저장만 하고,
+        그래프에 되돌려줄 "messages"는 이번 노드에서 새로 남긴 tool 로그(delta)만 리턴한다.
     """
     # DB URL 없으면 DB 작업을 스킵하고 로그만 남김
     if not DB_URL:
-        msgs: List[Message] = list(state.get("messages") or [])
-        _append_tool(msgs, "[persist_pipeline] DATABASE_URL not set; skipping DB upsert")
+        raw_msgs: List[Message] = list(state.get("messages") or [])
+        msgs_for_db = raw_msgs  # 그대로 사용 (cleaner도 안 들어감)
+        # delta 용 로그
+        log_msg = _append_tool(
+            msgs_for_db,
+            "[persist_pipeline] DATABASE_URL not set; skipping DB upsert",
+        )
         result: PersistResult = {
             "ok": False,
             "conversation_id": None,
-            "counts": {"messages": len(msgs), "embeddings": 0},
+            "counts": {"messages": len(msgs_for_db), "embeddings": 0},
             "warnings": ["DATABASE_URL not set"],
         }
         return {
-            "messages": msgs,
+            "messages": [log_msg],  # delta만 리턴
             "persist_result": result,
             "rolling_summary": state.get("rolling_summary"),
         }
 
+    # 그래프 state에서 messages 전체를 읽어서 DB에 저장용으로 사용
     raw_msgs: List[Message] = list(state.get("messages") or [])
     rolling_summary = state.get("rolling_summary")
     profile_id = state.get("profile_id")
@@ -312,19 +388,35 @@ def persist(
     _mode = ENV_MODE if cleaner_mode is None else cleaner_mode
     _no_store = ENV_NO_STORE_POLICY if no_store_policy is None else no_store_policy
 
-    # 2) 메시지 클리닝 (PII 마스킹, no_store 처리, 길이 제한)
+    # 2) state.messages 내에서 중복 제거 (content + role 기준)
+    #    → LLM은 전체 대화 이력을 참조하지만, DB에는 중복 없이 저장
+    seen = set()
+    deduped_msgs: List[Message] = []
+    for m in raw_msgs:
+        key = (m.get("content", ""), m.get("role", ""))
+        if key not in seen:
+            seen.add(key)
+            deduped_msgs.append(m)
+
+    # 3) 메시지 클리닝 (PII 마스킹, no_store 처리, 길이 제한)
     cleaned: List[Message] = clean_messages(
-        messages=raw_msgs,
+        messages=deduped_msgs,  # 중복 제거된 메시지 사용
         enable=_enable,
         mode=_mode,
         no_store_policy=_no_store,
     )
 
-    # 이후 로그는 cleaned에 직접 append (재클린 없음)
-    _append_tool(
-        cleaned,
-        "[persist_pipeline] cleaner applied",
-        {"enable": _enable, "mode": _mode, "no_store_policy": _no_store},
+    # delta 로 반환할 tool 로그들은 따로 모은다.
+    log_messages: List[Message] = []
+
+    # cleaner 적용 로그는 cleaned에도(실제 DB 저장용) 남기고,
+    # 반환 delta(log_messages)에도 공유한다.
+    log_messages.append(
+        _append_tool(
+            cleaned,
+            "[persist_pipeline] cleaner applied",
+            {"enable": _enable, "mode": _mode, "no_store_policy": _no_store},
+        )
     )
 
     # 3) 최종 요약 생성
@@ -352,7 +444,14 @@ def persist(
                     merged_profile = merge_result.get("merged_profile")
                     merged_collection = merge_result.get("merged_collection")
                     merge_log = merge_result.get("merge_log") or []
-                    _append_tool(cleaned, "[persist_pipeline] diff_merge completed", {"log": merge_log})
+
+                    log_messages.append(
+                        _append_tool(
+                            cleaned,
+                            "[persist_pipeline] diff_merge completed",
+                            {"log": merge_log},
+                        )
+                    )
 
                     # profiles upsert
                     if merged_profile is not None:
@@ -366,7 +465,12 @@ def persist(
 
                 else:
                     warnings.append("profile_id is None; skip profile/collection upsert")
-                    _append_tool(cleaned, "[persist_pipeline] no profile_id; skip profile/collection")
+                    log_messages.append(
+                        _append_tool(
+                            cleaned,
+                            "[persist_pipeline] no profile_id; skip profile/collection",
+                        )
+                    )
 
                 # 5-2) conversations upsert
                 summary_obj: Dict[str, Any] = {"text": final_summary}
@@ -392,7 +496,13 @@ def persist(
 
     except Exception as e:
         warnings.append(f"DB error: {e}")
-        _append_tool(cleaned, "[persist_pipeline] DB error; rollback", {"error": str(e)})
+        log_messages.append(
+            _append_tool(
+                cleaned,
+                "[persist_pipeline] DB error; rollback",
+                {"error": str(e)},
+            )
+        )
 
     # 6) 결과 리턴
     result: PersistResult = {
@@ -402,14 +512,22 @@ def persist(
         "warnings": warnings,
     }
 
-    _append_tool(
-        cleaned,
-        "[persist_pipeline] done",
-        {"conversation_id": conversation_id, "warnings": warnings},
+    log_messages.append(
+        _append_tool(
+            cleaned,
+            "[persist_pipeline] done",
+            {
+                "ok": result["ok"],
+                "conversation_id": conversation_id,
+                "counts": result["counts"],
+                "warnings": warnings,
+            },
+        )
     )
 
     return {
-        "messages": cleaned,
+        # 🔹 그래프에는 이번 노드에서 새로 생성한 tool 로그(delta)만 넘긴다.
+        "messages": log_messages,
         "persist_result": result,
         "rolling_summary": final_summary,
         "profile_id": profile_id,

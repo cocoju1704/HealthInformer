@@ -98,15 +98,19 @@ class EphemeralContextState(TypedDict, total=False):
     profile_id: Optional[int]           # DB profiles.id (있으면 persist에서 사용)
     ephemeral_profile: Dict[str, Any]   # 세션 중 추출된 임시 프로필 정보
     ephemeral_collection: Dict[str, Any]  # 세션 중 추출된 관심사/사례 정보 등
-
+    merged_profile: Dict[str, Any]  # DB 프로필 + 세션 중 추출된 임시 프로필 정보
+    merged_collection: Dict[str, Any]  # DB 컬렉션 + 세션 중 추출된 임시 컬렉션 정보
     # ── RAG 관련 ────────────────────────────────────────
+    retrieval: Dict[str, Any]            # retrieval_planner 집계 결과
     rag_snippets: Annotated[List[RagSnippet], operator.add]
     retrieval_meta: Dict[str, Any]      # 적용된 필터, 쿼리, k, 소요시간 등
 
     # ── 입출력 ─────────────────────────────────────────
     user_input: Optional[str]           # 현재 턴의 사용자 입력
     answer: Optional[str]               # 현재 턴의 모델 응답 (최종 텍스트)
-
+    user_action: Optional[str]          # 사용자 액션 Literal["none","save","reset_save","reset_drop"]
+    # ── Router 결정 값 ──────────────────────────────────
+    router: Dict[str, Any]             # category, save_profile, save_collection, use_rag 등
     # ── 통계/메타 ───────────────────────────────────────
     model_stats: Dict[str, Any]         # 토큰 사용량, latency 등 집계
     persist_result: PersistResult       # 마지막 persist_pipeline 실행 결과
