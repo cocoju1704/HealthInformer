@@ -6,8 +6,8 @@ import time
 import streamlit as st
 from src.widgets.policy_card import render_policy_card
 from src.utils.template_loader import render_template, load_css
-from src.api_client import api_client  # 새 API 클라이언트 모듈
-# from src.api_client import api_client # 새 API 클라이언트 모듈
+from src.backend_service import backend_service
+
 
 SUGGESTED_QUESTIONS = [
     "청년 주거 지원 정책이 궁금해요",
@@ -53,7 +53,7 @@ def handle_send_message(message: str):
         with st.spinner("답변 생성중..."):
             # 스트리밍 대신 단일 응답 호출로 변경
             token = _get_auth_token()  # 인증 토큰 가져오기
-            response = api_client.send_chat_message(
+            response = backend_service.send_chat_message(
                 session_id=st.session_state.get("session_id"),  # 세션 ID 전달
                 token=token,  # 인증 토큰 전달
                 user_input=message,
@@ -116,8 +116,9 @@ def save_messages_to_backend():
 
     # 3. API 클라이언트 호출
     with st.spinner("대화 내용을 저장 중..."):
-        success, result = api_client.save_chat_history(
+        success, result = backend_service.save_chat_history(
             token=token,
+            conversation_id=st.session_state.get("conversation_id"), # 💡 [추가] 현재 대화 ID 전송
             profile_id=st.session_state.current_profile_id,
             messages=messages_to_save,
         )
@@ -125,6 +126,8 @@ def save_messages_to_backend():
     # 4. 결과 처리
     if success:
         st.toast("✅ 대화 내용이 데이터베이스에 성공적으로 저장되었습니다.", icon="💾")
+        # 💡 [추가] 첫 저장 시 반환된 ID를 세션에 저장
+        st.session_state["conversation_id"] = result.get("conversation_id")
         return True
     else:
         error_msg = result.get("error", "알 수 없는 저장 오류가 발생했습니다.")
@@ -250,11 +253,13 @@ def render_chatbot_main():
                 # 💡 [수정] 대화 저장 시도 후, 성공했을 때만 초기화
                 if save_messages_to_backend():
                     st.session_state.messages = []
+                    st.session_state.conversation_id = None # 💡 [추가] 대화 ID 초기화
                     st.session_state.save_chat_confirmation = False
                     st.rerun()
         with col2:
             if st.button("🗑️ 저장하지 않고 초기화", use_container_width=True):
                 st.session_state.messages = []
+                st.session_state.conversation_id = None # 💡 [추가] 대화 ID 초기화
                 st.session_state.save_chat_confirmation = False
                 st.rerun()
         with col3:

@@ -2,8 +2,12 @@
 
 import uuid
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
+import logging
+
+# 로깅 설정
+logger = logging.getLogger(__name__)
 
 
 class ConversationSaveError(Exception):
@@ -13,8 +17,9 @@ class ConversationSaveError(Exception):
 
 
 def save_full_conversation(
-    cursor: Any, # user_id는 conversations 테이블에 직접 저장되지 않으므로 제거
+    cursor: Any,  # user_id는 conversations 테이블에 직접 저장되지 않으므로 제거
     profile_id: int,
+    conversation_id: Optional[str],  # 💡 [수정] conversation_id를 인자로 받음
     messages: List[Dict[str, Any]],
 ) -> str:
     """
@@ -23,6 +28,7 @@ def save_full_conversation(
     Args:
         cursor: DB 커서 객체
         user_id: 현재 인증된 사용자 ID
+        conversation_id: 기존 대화 ID (없으면 새로 생성)
         profile_id: 대화에 사용된 프로필 ID
         messages: 프론트엔드에서 받은 전체 메시지 목록
 
@@ -35,8 +41,13 @@ def save_full_conversation(
     if not messages:
         return "no_messages_to_save"
 
-    # 1. 새 conversation_id 생성
-    conversation_id = str(uuid.uuid4())
+    # 1. conversation_id가 없으면 새로 생성, 있으면 기존 ID 사용
+    is_new_conversation = not conversation_id
+    if is_new_conversation:
+        conversation_id = str(uuid.uuid4())
+    else:
+        # 기존 메시지는 삭제 후 다시 삽입 (UPSERT보다 간단한 구현)
+        cursor.execute("DELETE FROM public.messages WHERE conversation_id = %s", (conversation_id,))
 
     # 2. 메타데이터 준비
     now = datetime.now(timezone.utc)
@@ -79,27 +90,40 @@ def save_full_conversation(
 
     # 3. DB 저장 로직 시작 (트랜잭션 권장)
     try:
-        # 3-1. conversations 테이블에 새 레코드 삽입
-        # summary와 model_stats 등은 초기에는 비워두거나 기본값으로 설정
-        cursor.execute(
-            """
-            INSERT INTO public.conversations 
-                (id, profile_id, started_at, ended_at, summary, model_stats, created_at)
-            VALUES 
-                (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                conversation_id,
-                profile_id,
-                datetime.fromtimestamp(started_at, tz=timezone.utc),
-                datetime.fromtimestamp(ended_at, tz=timezone.utc),
-                json.dumps(
-                    {"initial_prompt": messages[0].get("content")}
-                ),  # 초기 질문만 요약으로 임시 저장
-                json.dumps({}),
-                now,
+        if is_new_conversation:
+            # 3-1. (신규) conversations 테이블에 새 레코드 삽입
+            cursor.execute(
+                """
+                INSERT INTO public.conversations 
+                    (id, profile_id, started_at, ended_at, summary, model_stats, created_at)
+                VALUES 
+                    (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    conversation_id,
+                    profile_id,
+                    datetime.fromtimestamp(started_at, tz=timezone.utc),
+                    datetime.fromtimestamp(ended_at, tz=timezone.utc),
+                    json.dumps({"initial_prompt": messages[0].get("content")}),
+                    json.dumps({}),
+                    now,
+                ),
+            )
+        else:
+            # 3-1. (업데이트) 기존 conversations 레코드의 종료 시간 등 업데이트
+            cursor.execute(
+                """
+                UPDATE public.conversations
+                SET ended_at = %s,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                (
+                    datetime.fromtimestamp(ended_at, tz=timezone.utc),
+                    now,
+                    conversation_id,
+                ),
             ),
-        )
 
         # 3-2. messages 테이블에 모든 메시지 레코드 삽입
         for record in message_records:
@@ -131,5 +155,6 @@ def save_full_conversation(
         return conversation_id
 
     except Exception as e:
+        logger.exception("DB 저장 트랜잭션 실패")  # 스택 트레이스 로깅
         # 로깅 필요
         raise ConversationSaveError(f"DB 저장 트랜잭션 실패: {e}")

@@ -99,7 +99,7 @@ class BackendService:
         새로운 통합 /api/chat 엔드포인트로 채팅 메시지를 전송합니다.
         스트리밍을 사용하지 않고 전체 응답을 한 번에 받습니다.
         """
-        url = f"{FASTAPI_BASE_URL}/api/v1/chat"
+        url = f"{FASTAPI_BASE_URL}/api/v1/chat/stream"
         ok, user_profile = backend_service.get_user_profile(token)
 
         if not ok:
@@ -136,11 +136,13 @@ class BackendService:
     def save_chat_history(
         self,
         token: str,
+        conversation_id: Optional[str],
         profile_id: int,
         messages: List[Dict[str, Any]],
     ) -> Tuple[bool, Dict[str, Any]]:
         """현재 대화 세션의 전체 메시지를 DB에 저장합니다."""
         payload = {
+            "conversation_id": conversation_id,
             "profile_id": profile_id,
             "messages": messages,
         }

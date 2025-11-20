@@ -87,6 +87,7 @@ class Message(BaseModel):
 class SaveChatRequest(BaseModel):
     """대화 저장 요청 본문 모델"""
 
+    conversation_id: Optional[str] = None  # 💡 [추가] 기존 대화 ID
     profile_id: int = Field(..., description="선택된 사용자 프로필 ID")
     messages: List[Message] = Field(..., description="저장할 전체 메시지 목록")
 
@@ -133,6 +134,7 @@ async def save_chat_history(
             conversation_id = chat_repository.save_full_conversation(
                 cursor=cursor,
                 profile_id=request.profile_id,
+                conversation_id=request.conversation_id,  # 💡 [추가] ID 전달
                 # 딕셔너리로 변환된 메시지 리스트를 전달
                 messages=messages_as_dicts,
             )
