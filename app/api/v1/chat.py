@@ -42,12 +42,13 @@ def get_graph_app():
 # Request / Response Models
 # ─────────────────────────────────────
 
-
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
+    profile_id: Optional[int] = None  # 👈 프로필 ID 추가
     user_input: str
     user_action: str = "none"
     client_meta: Dict[str, Any] = {}
+
 
 
 class ChatDebug(BaseModel):

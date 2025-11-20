@@ -44,16 +44,24 @@ class BackendService:
         self,
         session_id: Optional[str],
         user_input: str,
-        token: Optional[str] = None,  # 인증 토큰 추가 (선택 사항으로 변경)
+        token: Optional[str] = None,  # 인증 토큰
         user_action: str = "none",
+        profile_id: Optional[int] = None,  # 👈 프로필 ID 추가
     ) -> Dict[str, Any]:
         """
         새로운 통합 /api/chat 엔드포인트로 채팅 메시지를 전송합니다.
         스트리밍을 사용하지 않고 전체 응답을 한 번에 받습니다.
         """
-        url = f"{FASTAPI_BASE_URL}/api/v1/chat" # API 경로 수정
+        url = f"{FASTAPI_BASE_URL}/api/v1/chat"
+        ok, user_profile = backend_service.get_user_profile(token)
+
+        if not ok:
+            st.error("프로필을 불러올 수 없습니다.")
+        else:
+            profile_id = user_profile.get("main_profile_id")
         payload = {
             "session_id": session_id,
+            "profile_id": profile_id,  # 👈 요청 payload에 포함
             "user_input": user_input,
             "user_action": user_action,
             "client_meta": {
@@ -66,14 +74,12 @@ class BackendService:
             headers["Authorization"] = f"Bearer {token}"
 
         try:
-            # 백엔드 API가 인증을 요구하므로 헤더를 포함하여 요청
             response = requests.post(url, json=payload, headers=headers, timeout=120)
             response.raise_for_status()
-            return response.json()  # ChatResponse 모델에 맞는 dict 반환
+            return response.json()
         except requests.exceptions.RequestException as e:
             error_msg = f"채팅 API 요청 중 오류 발생: {e}"
             print(error_msg)
-            # server_test.py의 ChatResponse와 유사한 오류 구조 반환
             return {
                 "session_id": session_id,
                 "answer": f"오류: {error_msg}",
