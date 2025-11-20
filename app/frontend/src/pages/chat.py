@@ -1,12 +1,13 @@
 """채팅 렌더링/메시지 전송/정책 카드 파싱"""
+
 # app/frontend/src/pages/chat.py
 import uuid
 import time
 import streamlit as st
 from src.widgets.policy_card import render_policy_card
 from src.utils.template_loader import render_template, load_css
-from src.backend_service import backend_service
-
+from src.api_client import api_client  # 새 API 클라이언트 모듈
+# from src.api_client import api_client # 새 API 클라이언트 모듈
 
 SUGGESTED_QUESTIONS = [
     "청년 주거 지원 정책이 궁금해요",
@@ -52,10 +53,11 @@ def handle_send_message(message: str):
         with st.spinner("답변 생성중..."):
             # 스트리밍 대신 단일 응답 호출로 변경
             token = _get_auth_token()  # 인증 토큰 가져오기
-            response = backend_service.send_chat_message(
+            response = api_client.send_chat_message(
                 session_id=st.session_state.get("session_id"),  # 세션 ID 전달
                 token=token,  # 인증 토큰 전달
                 user_input=message,
+                profile_id=st.session_state.get("current_profile_id"),
             )
 
             # 응답 처리
@@ -92,6 +94,42 @@ def handle_send_message(message: str):
     st.session_state["is_loading"] = False
     st.session_state["clear_user_input"] = True
     st.rerun()
+
+
+# 11.20 추가: 대화 저장 함수
+def save_messages_to_backend():
+    """
+    현재 st.session_state.messages 내용을 백엔드 API로 전송하여 저장합니다.
+    """
+    token = _get_auth_token()
+
+    # 1. 필수 로그인/프로필 정보 확인
+    if not token or not st.session_state.get("current_profile_id"):
+        st.toast("❌ 로그인 정보가 부족합니다. 저장을 할 수 없습니다.", icon="❌")
+        return False
+
+    # 2. 메시지 목록 확인
+    messages_to_save = st.session_state.get("messages", [])
+    if not messages_to_save:
+        st.toast("⚠️ 저장할 대화 내용이 없습니다.", icon="⚠️")
+        return False
+
+    # 3. API 클라이언트 호출
+    with st.spinner("대화 내용을 저장 중..."):
+        success, result = api_client.save_chat_history(
+            token=token,
+            profile_id=st.session_state.current_profile_id,
+            messages=messages_to_save,
+        )
+
+    # 4. 결과 처리
+    if success:
+        st.toast("✅ 대화 내용이 데이터베이스에 성공적으로 저장되었습니다.", icon="💾")
+        return True
+    else:
+        error_msg = result.get("error", "알 수 없는 저장 오류가 발생했습니다.")
+        st.toast(f"❌ 대화 저장 실패: {error_msg}", icon="❌")
+        return False
 
 
 def render_chatbot_main():
@@ -157,13 +195,6 @@ def render_chatbot_main():
 
                 # 인터랙션 버튼들
                 st.markdown('<div class="message-actions">', unsafe_allow_html=True)
-                # col1, col2, col3, col4 = st.columns([1, 1, 1, 8])
-                # with col1:
-                #     st.button("👍", key=f"like_{idx}", help="도움이 되었어요")
-                # with col2:
-                #     st.button("👎", key=f"dislike_{idx}", help="별로예요")
-                # with col3:
-                #     st.button("📋", key=f"copy_{idx}", help="복사")
                 st.markdown("</div>", unsafe_allow_html=True)
 
                 # AI 메시지 종료
@@ -206,7 +237,7 @@ def render_chatbot_main():
 
     render_template("components/disclaimer.html")
 
-    # --- 대화 저장 및 초기화 UI ---
+    # --- 대화 저장 및 초기화 UI(11.20) ---
     st.markdown("---")
     if st.session_state.save_chat_confirmation:
         st.warning(
@@ -215,12 +246,12 @@ def render_chatbot_main():
         col1, col2, col3 = st.columns([1.5, 1.5, 1])
         with col1:
             if st.button("💾 저장하고 초기화", use_container_width=True):
-                token = _get_auth_token()
-                if token:
-                    st.toast("대화 내용 저장 기능은 구현 예정입니다.")
-                st.session_state.messages = []
-                st.session_state.save_chat_confirmation = False
-                st.rerun()
+                # 기존: st.toast("대화 내용 저장 기능은 구현 예정입니다.")
+                # 💡 [수정] 대화 저장 시도 후, 성공했을 때만 초기화
+                if save_messages_to_backend():
+                    st.session_state.messages = []
+                    st.session_state.save_chat_confirmation = False
+                    st.rerun()
         with col2:
             if st.button("🗑️ 저장하지 않고 초기화", use_container_width=True):
                 st.session_state.messages = []
@@ -234,11 +265,12 @@ def render_chatbot_main():
         col_save, col_reset = st.columns(2)
         with col_save:
             if st.button("💾 대화 저장", use_container_width=True):
-                token = _get_auth_token()
-                if token:
-                    st.toast("대화 내용 저장 기능은 구현 예정입니다.")
-                else:
+                # 기존: st.toast("대화 내용 저장 기능은 구현 예정입니다.") 또는 st.warning("로그인이 필요합니다.")
+                # 💡 [수정] 대화 저장 시도
+                if not st.session_state.get("auth_token"):
                     st.warning("로그인이 필요합니다.")
+                else:
+                    save_messages_to_backend()
 
         with col_reset:
             if st.button("🔄 초기화", use_container_width=True):
